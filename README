@@ -1,0 +1,20 @@
+Usage: virt-dup.sh --original name [options]
+
+This tool let you have fun to duplicate a Virtual Machine with qcow2 
+and raw images in seconds, under those filesystems with the native
+COW(--reflink) capability eg. btrfs, xfs-4.16, ocfs2. 
+
+It is created, just because virt-clone does not yet leverage the native
+COW capability of filesystems to duplicate qcow2. It only support RAW by
+now at the end of 2018. virt-clone might need a long time to duplicate
+qcow2 files, especially if they have backing files. With this, be
+caution, this tool doesn't support qcow2 with baking files.
+
+This tool will reset MAC and hostname of the Virtual Machine.
+
+Options:
+-h, --help
+-v, --verbose, -d, --debug
+-o, --original ORIGINAL_GUEST_NAME
+-n, --name NEW_GUEST_NAME
+

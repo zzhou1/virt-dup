@@ -26,7 +26,7 @@ run_cmd ()
 {
    CMD_STDOUT=""
    [ -z "$1" ] && die "error: no argument for run_cmd()"
-   log "cmd: $1"
+   log "run_cmd: $1"
    BINCMD=$(echo "$1"|cut -d' ' -f1)
    which $BINCMD >/dev/null 2>&1||die "error: $BINCMD not exist";
    if ! CMD_STDOUT="$($1 2>&1)"; then
@@ -34,19 +34,19 @@ run_cmd ()
       echo "error: fatal. Please try --debug."
       die "error: failed $1"
    fi
-   log "$CMD_STDOUT"
+   [ -z "$CMD_STDOUT" ] || log "$CMD_STDOUT"
    return 0
 }
 
 try_cmd ()
 {
    [ -z "$1" ] && die "error: no argument for try_cmd()"
-   log "cmd: $1"
+   log "try_cmd: $1"
    BINCMD=$(echo "$1"|cut -d' ' -f1)
    which $BINCMD >/dev/null 2>&1||die "error: $BINCMD not exist";
    CMD_STDOUT="$($1 2>&1)"
    TMP=$?
-   log "$CMD_STDOUT"
+   [ -z "$CMD_STDOUT" ] || log "$CMD_STDOUT"
    return $TMP
 }
 
@@ -246,9 +246,6 @@ do
    NEW_F=$(echo ${i} | sed -E "s#(.+)${ORG_VM}(.+)#\1${NEW_VM}\2#")
    NEW_VM_IMG_FILES="$NEW_VM_IMG_FILES $NEW_F"
 
-   #run_cmd "df --output=source `dirname ${i}`"
-   #TMP="INFO: $CMD_STDOUT doesn't support reflink for the following command. FYI, btrfs, ocfs2, and xfs-4.16 do."
-
    run_cmd "df --output=fstype `dirname ${i}`"
    TMP=""
    TEXT=$(echo "$CMD_STDOUT"|tail -n1)
@@ -259,12 +256,11 @@ do
 
    CMD="cp --reflink=auto -f ${i} ${NEW_F}"
    if ! [ "$TMP" = "YES" ]; then
-       echo "INFO: fs not support reflink. Copying might take time..."
+       echo "INFO: no reflink support fs, copying might take time..."
    fi
    echo "$CMD"
 
    run_cmd "$CMD"
-   #run_cmd "cp --reflink=auto -f ${i} ${NEW_F}"
 done
 
 L=$(sed -n -E "s#(.*<source file=')(.*)('/>)#\2#p" ${DUP_XML}|grep -v ${NEW_VM})
@@ -287,6 +283,24 @@ function reset_hostname_via_sysprep ()
     log "`$CMD 2>&1`"
 }
 
+function find_unused_lo_device_node ()
+{
+   NUMS=$(lsblk|cut -d' ' -f1|grep loop|sed 's/loop//')
+   DEV=""
+   for i in {0..100}
+   do
+      LOOP_DEV_EXIST="NO"
+      for j in $NUMS; do
+         [ "${i}_x" = "${j}_x" ] && LOOP_DEV_EXIST="YES" && break
+      done
+      [ "$LOOP_DEV_EXIST" = "NO" ] && DEV="/dev/loop$i" && return 0
+
+      i=$((i+1))
+   done
+
+   [ -z $DEV ] && die "error: no spare loop device under /dev/"
+}
+
 function find_unused_nbd_device_node ()
 {
    is_cmd_installed "qemu-nbd"
@@ -295,9 +309,7 @@ function find_unused_nbd_device_node ()
    modprobe nbd max_part=8
    NUMS=$(lsblk|grep nbd|grep disk|cut -d' ' -f1|sed 's/nbd//')
    DEV=""
-   #i=0
-   #while [ "$i" -lt "$((NUM+1))" ] && [ -e "/dev/nbd$i" ]
-   for i in {0..15}
+   for i in {0..100}
    do
       NBD_DEV_EXIST="NO"
       for j in $NUMS; do
@@ -311,6 +323,46 @@ function find_unused_nbd_device_node ()
    [ -z $DEV ] && die "error: no spare nbd device under /dev/"
 }
 
+# INPUT: ${DEV}
+function reset_hostname_in_block_device ()
+{
+
+   # Also deal with the filesystem image without partitions
+   #try_cmd "partx --show --output NR - $DEV" ;# to fresh kernel data
+   run_cmd "partprobe ${DEV}" 		  ;#fresh the kernel data
+   run_cmd "lsblk -o NAME,FSTYPE -P $DEV" ;#both holder dev & its slaves
+   TEXT=$(echo "$CMD_STDOUT"|grep -e 'TYPE="xfs"' -e 'TYPE="btrfs"' \
+   -e 'TYPE="ext'|cut -d'"' -f2)
+
+   for i in $TEXT
+   do
+      run_cmd "mount /dev/$i $M_POINT"
+      if [ -e $M_POINT/etc/hostname ]; then
+         run_cmd "cat $M_POINT/etc/hostname"
+         echo $NEW_VM > $M_POINT/etc/hostname 
+         run_cmd "fsync $M_POINT/etc/hostname"
+         run_cmd "cat $M_POINT/etc/hostname"
+      fi
+      run_cmd "umount $M_POINT"
+   done
+
+}
+
+# INPUT: ${IMG_FILE}
+function reset_hostname_of_raw_image ()
+{
+   IMG_FILE="$1"
+
+   find_unused_lo_device_node
+   log "$DEV"
+
+   run_cmd "losetup $DEV $IMG_FILE"
+   reset_hostname_in_block_device $DEV
+   run_cmd "losetup -d $DEV"
+}
+
+
+# INPUT: ${IMG_FILE}
 function reset_hostname_via_qemu_nbd ()
 {
    IMG_FILE="$1"
@@ -319,39 +371,23 @@ function reset_hostname_via_qemu_nbd ()
    log "$DEV"
 
    run_cmd "qemu-nbd --connect=$DEV ${IMG_FILE}"
-
-   # FIXME
-   # caution: Need deal with the filesystem image without partitions
-   #try_cmd "partx --show --output NR - $DEV" ;# to fresh kernel data
-   try_cmd "partprobe $DEV" ;# to fresh kernel data
-   try_cmd "blkid -p ${DEV}*"
-   TEXT=$(echo "$CMD_STDOUT"|grep -e 'TYPE="xfs"' -e 'TYPE="btrfs"' -e 'TYPE="ext'|cut -d':' -f1)
-
-   for i in $TEXT
-   do
-      try_cmd "mount $i $M_POINT" || continue
-      for j in `ls $M_POINT`
-      do
-         if [ "${j}_x" = "etc_x" ]; then
-	    run_cmd "cat $M_POINT/etc/hostname"
-	    echo $NEW_VM > $M_POINT/etc/hostname 
-	    run_cmd "fsync $M_POINT/etc/hostname"
-	    run_cmd "cat $M_POINT/etc/hostname"
-	  fi
-      done
-      run_cmd "umount $M_POINT"
-   done
+   reset_hostname_in_block_device $DEV
    run_cmd "qemu-nbd --disconnect $DEV"
 }
 
 
-# FIXME: yet to handle rootfs in the RAW image
+# handle rootfs either in QCOW or RAW image
 #
 M_POINT="/tmp/mnt.$DOMAIN_DUP_RANDOM"
 run_cmd "mkdir $M_POINT"
 for i in $NEW_VM_IMG_FILES;
 do
-   reset_hostname_via_qemu_nbd "$i"
+   run_cmd "file -b ${i}"
+   if `echo $CMD_STDOUT|grep QCOW > /dev/null 2>&1`; then
+      reset_hostname_via_qemu_nbd "$i"
+   else
+      reset_hostname_of_raw_image "$i"
+   fi
 done
 run_cmd "rm -df $M_POINT"
 

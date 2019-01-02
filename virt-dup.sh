@@ -261,6 +261,7 @@ do
    echo "$CMD"
 
    run_cmd "$CMD"
+   run_cmd "fsync $NEW_F"
 done
 
 L=$(sed -n -E "s#(.*<source file=')(.*)('/>)#\2#p" ${DUP_XML}|grep -v ${NEW_VM})

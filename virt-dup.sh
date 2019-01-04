@@ -20,19 +20,19 @@
 
 log (){ [ "${IS_DEBUG}_x" = "YES_x" ] || return; echo "$1"; }
 die () { echo "$1"; exit; }
-is_cmd_installed () { which $1 >/dev/null 2>&1||die "error: $1 not exist"; }
+is_cmd_installed () { which $1 >/dev/null 2>&1||die "ERR: $1 not exist"; }
 
 run_cmd ()
 {
    CMD_STDOUT=""
-   [ -z "$1" ] && die "error: no argument for run_cmd()"
+   [ -z "$1" ] && die "ERR: no argument for run_cmd()"
    log "run_cmd: $1"
    BINCMD=$(echo "$1"|cut -d' ' -f1)
-   which $BINCMD >/dev/null 2>&1||die "error: $BINCMD not exist";
+   which $BINCMD >/dev/null 2>&1||die "ERR: $BINCMD not exist";
    if ! CMD_STDOUT="$($1 2>&1)"; then
       log "$CMD_STDOUT"
-      echo "error: fatal. Please try --debug."
-      die "error: failed $1"
+      echo "ERR: fatal. Please try --debug."
+      die "ERR: failed $1"
    fi
    [ -z "$CMD_STDOUT" ] || log "$CMD_STDOUT"
    return 0
@@ -40,10 +40,10 @@ run_cmd ()
 
 try_cmd ()
 {
-   [ -z "$1" ] && die "error: no argument for try_cmd()"
+   [ -z "$1" ] && die "ERR: no argument for try_cmd()"
    log "try_cmd: $1"
    BINCMD=$(echo "$1"|cut -d' ' -f1)
-   which $BINCMD >/dev/null 2>&1||die "error: $BINCMD not exist";
+   which $BINCMD >/dev/null 2>&1||die "ERR: $BINCMD not exist";
    CMD_STDOUT="$($1 2>&1)"
    TMP=$?
    [ -z "$CMD_STDOUT" ] || log "$CMD_STDOUT"
@@ -54,17 +54,25 @@ function usage ()
 {
     echo "Usage: $(basename $0) --original vmname [options]"
     echo -e "
-This tool let you have fun to duplicate a Virtual Machine with qcow2 
-and raw images in seconds, under those filesystems with the native
-COW(--reflink) capability eg. btrfs, xfs-4.16, ocfs2. 
+Motivation of this tool is to duplicate a Virtual Machine in seconds.
+To reach that speed, the trick is to deploy all VM images in the
+filesystem with the native COW(--reflink) capability, eg. btrfs,
+xfs-4.16, ocfs2, etc. 
 
 It is created, just because virt-clone does not yet leverage the native
-COW capability of filesystems to duplicate qcow2. It only support RAW by
-now at the end of 2018. virt-clone might need a long time to duplicate
-qcow2 files, especially if they have backing files. With this, be
-caution, this tool doesn't support qcow2 with baking files.
+COW(--reflink) capability of the filesystem to duplicate qcow2. It only
+support RAW by now at the end of 2018. virt-clone might take noticeable
+time to duplicate qcow2 image files. Well, it is understandable
+virt-clone wants to keep the advantage of qcow2 backing file
+functionality for existent use cases.
 
 This tool will reset MAC and hostname of the Virtual Machine.
+
+
+Tips:
+- to let a image shared among Virtual Machines, you should avoid
+  the Virttual Machine name to be the substring of that image name.
+
 
 Options:
 -h, --help
@@ -135,24 +143,24 @@ fi
 
 DOMAIN_DUP_RANDOM=$RANDOM
 if [[ -n ${ORG_VM} ]]; then
-    echo ${ORG_VM}|grep " "
-    if ! [ $? ]; then
-       echo "This script don't work with the VM name has any 'space' char, '${ORG_VM}'"
+    echo ${ORG_VM}|grep "[[:space:]]" > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+       echo "ERR: this script don't work with the VM name has any 'space' char, '${ORG_VM}'"
        exit
     fi
 
     is_cmd_installed "virsh"
 
     if ! TEXT=$(virsh domstate ${ORG_VM} 2>&1); then
-	echo "error: the virtual machine $ORG_VM doesn't exist"
+	echo "ERR: the virtual machine $ORG_VM doesn't exist"
 	exit
     fi
 
     if [ "${TEXT}_x" = "shut off_x" ]; then
        log "${ORG_VM} is off."
     else
-       run_cmd "virsh suspend ${ORG_VM} 2>&1"
-       echo "${ORG_VM} get suspended to duplicate GUEST XML"
+       run_cmd "virsh suspend ${ORG_VM}"
+       echo -n "${ORG_VM} get suspended to duplicate GUEST XML"
        IS_SUSPENDED="YES"
     fi
 
@@ -163,8 +171,9 @@ else
 fi
 
 if [ "${IS_SUSPENDED}_x" = "YES_x" ]; then
-    run_cmd "virsh resume ${ORG_VM} 2>&1"
-    echo "${ORG_VM} get resumed"
+    run_cmd "virsh resume ${ORG_VM}"
+#    echo "${ORG_VM} get resumed"
+    echo ", resumed"
 fi
 
 ####################################################################
@@ -172,14 +181,33 @@ fi
 #
 [[ -z ${NEW_VM} ]] && NEW_VM="${ORG_VM}_dup"
 
+if [[ $ORG_VM == *"$NEW_VM"* ]]; then
+    echo "ERR: the new VM name is substring of the old VM name is prohibited currently."
+    exit
+fi
+
+#if [[ $NEW_VM == *"$ORG_VM"* ]]; then
+#    echo "ERR: the orginal VM name is substring of the new VM name is prohibited."
+#    exit
+#fi
+
+echo ${NEW_VM}|grep "[[:space:]]" > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "ERR: this script don't work with the VM name has any 'space' char, '${NEW_VM}'"
+    exit
+fi
+ 
 log "${DUP_XML} is under processing for ${NEW_VM} "
 log "$(grep -e "/name" -e "/uuid" -e "<mac address=" -e "<source file=.*${ORG_VM}.*"  ${DUP_XML})"
+
+# find what image files won't change
+IMG_FILES_WONT_CHANGE=$(sed -n -E "s#(.*<source file=')(.*)('/>)#\2#p" ${DUP_XML}|grep -v ${ORG_VM})
 
 # handle multiple image files
 ORG_VM_IMG_FILES=$(sed -n -E "s#(.*<source file=')(.+${ORG_VM}.+)('/>)#\2#p" ${DUP_XML})
 
 if [[ -z ${ORG_VM_IMG_FILES} ]]; then
-   log "Stop, no result to search $ORG_VM in any image file name"
+   log "Stop, no result when search $ORG_VM in all image names"
    exit
 fi
 
@@ -193,7 +221,7 @@ if TEXT=$(virsh domstate ${NEW_VM} 2>&1); then
       STATUS=$?
       log "${TEXT}"
       if [ "${STATUS}_x" = "1_x" ]; then
-         echo "error: failed to destroy ${NEW_VM}"
+         echo "ERR: failed to destroy ${NEW_VM}"
         exit
       fi
    fi
@@ -202,7 +230,7 @@ if TEXT=$(virsh domstate ${NEW_VM} 2>&1); then
    STATUS=$?
    log "${TEXT}"
    if [ "${STATUS}_x" = "1_x" ]; then
-      echo "error: failed to undefine ${NEW_VM}"
+      echo "ERR: failed to undefine ${NEW_VM}"
       exit
    fi
 fi
@@ -219,6 +247,8 @@ sed -i "s#<uuid>.*</uuid>#<uuid>`cat /proc/sys/kernel/random/uuid`</uuid>#" ${DU
 #  FIXME: what about multiple MAC?
 MACADDR="52:54:00:$(echo ${DOMAIN_DUP_RANDOM} | md5sum | sed 's/^\(..\)\(..\)\(..\).*$/\1:\2:\3/')"
 sed -i "s#<mac address=.*/>#<mac address='${MACADDR}'/>#" ${DUP_XML}
+echo "reset MACADDR ................................... done"
+
 
 #
 #  4. Change domain image file
@@ -230,7 +260,7 @@ log "$(grep -e "/name" -e "/uuid" -e "<mac address=" -e "<source file=.*${NEW_VM
 
 if ! TEXT="$(virsh define ${DUP_XML} 2>&1)"; then
     log "${TEXT}"
-    echo "error: failed to define ${NEW_VM}"
+    echo "ERR: failed to define ${NEW_VM}"
     exit
 fi
 
@@ -264,13 +294,6 @@ do
    run_cmd "fsync $NEW_F"
 done
 
-L=$(sed -n -E "s#(.*<source file=')(.*)('/>)#\2#p" ${DUP_XML}|grep -v ${NEW_VM})
-for i in $L;
-do
-    echo "INFO: $i is shared among VMs"
-done
-
-
 ####################################################################
 # virt-sysprep
 #
@@ -299,7 +322,7 @@ function find_unused_lo_device_node ()
       i=$((i+1))
    done
 
-   [ -z $DEV ] && die "error: no spare loop device under /dev/"
+   [ -z $DEV ] && die "ERR: no spare loop device under /dev/"
 }
 
 function find_unused_nbd_device_node ()
@@ -321,7 +344,7 @@ function find_unused_nbd_device_node ()
       i=$((i+1))
    done
 
-   [ -z $DEV ] && die "error: no spare nbd device under /dev/"
+   [ -z $DEV ] && die "ERR: no spare nbd device under /dev/"
 }
 
 # INPUT: ${DEV}
@@ -343,6 +366,7 @@ function reset_hostname_in_block_device ()
          echo $NEW_VM > $M_POINT/etc/hostname 
          run_cmd "fsync $M_POINT/etc/hostname"
          run_cmd "cat $M_POINT/etc/hostname"
+	 echo "reset /etc/hostname ............................. done"
       fi
       run_cmd "umount $M_POINT"
    done
@@ -392,6 +416,12 @@ do
 done
 run_cmd "rm -df $M_POINT"
 
+
+# notify what image files won't change
+for i in $IMG_FILES_WONT_CHANGE;
+do
+    echo "INFO: $i is shared among VMs"
+done
 
 ####################################################################
 echo "now have fun: virsh start $NEW_VM"

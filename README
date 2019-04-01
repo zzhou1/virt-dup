@@ -1,4 +1,4 @@
-Usage: virt-dup --original vmname [options]
+Usage: virt-dup.sh --original vmname [options]
 
 Motivation of this tool is to duplicate a Virtual Machine in seconds.
 To reach that speed, the trick is to deploy all VM images in the
@@ -12,7 +12,11 @@ time to duplicate qcow2 image files. Well, it is understandable
 virt-clone wants to keep the advantage of qcow2 backing file
 functionality for existent use cases.
 
-This tool will reset MAC and hostname of the Virtual Machine.
+This tool will 
+- reset MAC to be unique
+- reset static IP to dhcp
+- cleanup hosts for the legacy ip - hostname record
+- reset hostname to the new Virtual Machine
 
 
 Tips:

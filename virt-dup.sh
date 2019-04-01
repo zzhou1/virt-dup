@@ -18,7 +18,7 @@
 #
 #
 
-log (){ [ "${IS_DEBUG}_x" = "YES_x" ] || return; echo "$1"; }
+log (){ [ "${IS_DEBUG}_x" = "YES_x" ] || return; echo -e "\r$1"; }
 die () { echo "$1"; exit; }
 is_cmd_installed () { which $1 >/dev/null 2>&1||die "ERR: $1 not exist"; }
 
@@ -66,7 +66,11 @@ time to duplicate qcow2 image files. Well, it is understandable
 virt-clone wants to keep the advantage of qcow2 backing file
 functionality for existent use cases.
 
-This tool will reset MAC and hostname of the Virtual Machine.
+This tool will 
+- reset MAC to be unique
+- reset static IP to dhcp
+- cleanup hosts for the legacy ip - hostname record
+- reset hostname to the new Virtual Machine
 
 
 Tips:
@@ -201,10 +205,10 @@ log "${DUP_XML} is under processing for ${NEW_VM} "
 log "$(grep -e "/name" -e "/uuid" -e "<mac address=" -e "<source file=.*${ORG_VM}.*"  ${DUP_XML})"
 
 # find what image files won't change
-IMG_FILES_WONT_CHANGE=$(sed -n -E "s#(.*<source file=')(.*)('/>)#\2#p" ${DUP_XML}|grep -v ${ORG_VM})
+IMG_FILES_WONT_CHANGE=$(sed -n -E "s@(.*<source file=')(.*)('/>)@\2@p" ${DUP_XML}|grep -v ${ORG_VM})
 
 # handle multiple image files
-ORG_VM_IMG_FILES=$(sed -n -E "s#(.*<source file=')(.+${ORG_VM}.+)('/>)#\2#p" ${DUP_XML})
+ORG_VM_IMG_FILES=$(sed -n -E "s@(.*<source file=')(.+${ORG_VM}.+)('/>)@\2@p" ${DUP_XML})
 
 if [[ -z ${ORG_VM_IMG_FILES} ]]; then
    log "Stop, no result when search $ORG_VM in all image names"
@@ -247,13 +251,13 @@ sed -i "s#<uuid>.*</uuid>#<uuid>`cat /proc/sys/kernel/random/uuid`</uuid>#" ${DU
 #  FIXME: what about multiple MAC?
 MACADDR="52:54:00:$(echo ${DOMAIN_DUP_RANDOM} | md5sum | sed 's/^\(..\)\(..\)\(..\).*$/\1:\2:\3/')"
 sed -i "s#<mac address=.*/>#<mac address='${MACADDR}'/>#" ${DUP_XML}
-echo "reset MACADDR ................................... done"
+echo "reset ${NEW_VM}:MACADDR .............................. done"
 
 
 #
 #  4. Change domain image file
 #  handle multiple image files
-sed -i -E "s#(<source file=.+)${ORG_VM}(.+)#\1${NEW_VM}\2#" ${DUP_XML}
+sed -i -E "s@(<source file=.+)${ORG_VM}(.+)@\1${NEW_VM}\2@" ${DUP_XML}
 
 log "${DUP_XML} is processed as"
 log "$(grep -e "/name" -e "/uuid" -e "<mac address=" -e "<source file=.*${NEW_VM}.*"  ${DUP_XML})"
@@ -273,7 +277,7 @@ echo "${NEW_VM} VM is newly defined"
 NEW_VM_IMG_FILES=""
 for i in $ORG_VM_IMG_FILES;
 do
-   NEW_F=$(echo ${i} | sed -E "s#(.+)${ORG_VM}(.+)#\1${NEW_VM}\2#")
+   NEW_F=$(echo ${i} | sed -E "s@(.+)${ORG_VM}(.+)@\1${NEW_VM}\2@")
    NEW_VM_IMG_FILES="$NEW_VM_IMG_FILES $NEW_F"
 
    run_cmd "df --output=fstype `dirname ${i}`"
@@ -362,11 +366,41 @@ function reset_hostname_in_block_device ()
    do
       run_cmd "mount /dev/$i $M_POINT"
       if [ -e $M_POINT/etc/hostname ]; then
+
+         #### reset hostname
+         echo -n "reset ${NEW_VM}:/etc/hostname ........................ "
          run_cmd "cat $M_POINT/etc/hostname"
          echo $NEW_VM > $M_POINT/etc/hostname 
          run_cmd "fsync $M_POINT/etc/hostname"
          run_cmd "cat $M_POINT/etc/hostname"
-	 echo "reset /etc/hostname ............................. done"
+         echo -e "\rreset ${NEW_VM}:/etc/hostname ........................ done"
+
+         #### reset static IP back to dhcp
+         echo "reset ${NEW_VM}:static IP addresses to dhcp .......... "
+         CMD="find $M_POINT/etc/sysconfig/network*  
+           -type f ! -name *lo ! -name *template
+           -exec grep BOOTPROTO=.*static.* {} +"
+         ${CMD}
+         CMD="find $M_POINT/etc/sysconfig/network*  
+           -type f ! -name *lo ! -name *template
+           -exec grep ^IPADDR.*=........* {} +"
+         ${CMD}
+
+         run_cmd "find $M_POINT/etc/sysconfig/network* \
+           -type f ! -name *lo ! -name *template \
+           -exec sed -i s/BOOTPROTO=.*static.*/BOOTPROTO=dhcp/ {} +"
+         run_cmd "find $M_POINT/etc/sysconfig/network* \
+           -type f ! -name *lo ! -name *template \
+           -exec sed -i s/^\(IPADDR.*=\)........*/\1''/ {} +"
+         echo -e "\rreset ${NEW_VM}:static IP addresses to dhcp .......... done"
+
+         #### reset /etc/hosts leftover from the old vm 
+         #echo "reset ${NEW_VM}:/etc/hosts ...................... " 
+	 grep -H "$ORG_VM" $M_POINT/etc/hosts
+         run_cmd "sed -i /$ORG_VM/d $M_POINT/etc/hosts"
+         echo -e "\rreset ${NEW_VM}:/etc/hosts ........................... done "    
+
+
       fi
       run_cmd "umount $M_POINT"
    done
@@ -429,4 +463,4 @@ echo "now have fun: virsh start $NEW_VM"
 
 
 
-
+# vim: set tabstop=4|set shiftwidth=4|set textwidth=72

@@ -251,7 +251,7 @@ sed -i "s#<uuid>.*</uuid>#<uuid>`cat /proc/sys/kernel/random/uuid`</uuid>#" ${DU
 #  FIXME: what about multiple MAC?
 MACADDR="52:54:00:$(echo ${DOMAIN_DUP_RANDOM} | md5sum | sed 's/^\(..\)\(..\)\(..\).*$/\1:\2:\3/')"
 sed -i "s#<mac address=.*/>#<mac address='${MACADDR}'/>#" ${DUP_XML}
-echo "reset ${NEW_VM}:MACADDR .............................. done"
+echo "INFO: reset ${NEW_VM}:MACADDR .............................. done"
 
 
 #
@@ -373,7 +373,7 @@ function reset_hostname_in_block_device ()
          echo $NEW_VM > $M_POINT/etc/hostname 
          run_cmd "fsync $M_POINT/etc/hostname"
          run_cmd "cat $M_POINT/etc/hostname"
-         echo -e "\rreset ${NEW_VM}:/etc/hostname ........................ done"
+         echo -e "\rINFO: reset ${NEW_VM}:/etc/hostname ........................ done"
 
          #### reset static IP back to dhcp
          echo "reset ${NEW_VM}:static IP addresses to dhcp .......... "
@@ -392,13 +392,13 @@ function reset_hostname_in_block_device ()
          run_cmd "find $M_POINT/etc/sysconfig/network* \
            -type f ! -name *lo ! -name *template \
            -exec sed -i s/^\(IPADDR.*=\)........*/\1''/ {} +"
-         echo -e "\rreset ${NEW_VM}:static IP addresses to dhcp .......... done"
+         echo -e "\rINFO: reset ${NEW_VM}:static IP addresses to dhcp .......... done"
 
          #### reset /etc/hosts leftover from the old vm 
          #echo "reset ${NEW_VM}:/etc/hosts ...................... " 
 	 grep -H "$ORG_VM" $M_POINT/etc/hosts
          run_cmd "sed -i /$ORG_VM/d $M_POINT/etc/hosts"
-         echo -e "\rreset ${NEW_VM}:/etc/hosts ........................... done "    
+         echo -e "\rINFO: reset ${NEW_VM}:/etc/hosts ........................... done "    
 
 
       fi

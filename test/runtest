@@ -59,7 +59,9 @@ def launch_test(py_exec_path):
         return ""
     print ('\n################# Launch test with: '
            +py_exec_path+' #################\n')
-    p = subprocess.Popen([py_exec_path, "test_virt-dup.py"],
+
+    cmd_folder = os.path.realpath(os.path.abspath(os.path.split(inspect.getfile(inspect.currentframe() ))[0]))
+    p = subprocess.Popen([py_exec_path, cmd_folder+"/test_virt-dup.py"],
                          universal_newlines=True,
                          stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE)

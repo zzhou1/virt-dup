@@ -1,12 +1,13 @@
-#!/usr/bin/python
-
-# python2 and python3 compatible is expected
+#!/usr/bin/env python3
+#-*- coding: utf-8 -*-
 
 import unittest
 import sys
 import os
 import inspect
 import traceback
+import contextlib
+from io import StringIO
 
 # https://stackoverflow.com/questions/279237/import-a-module-from-a-relative-path
 #
@@ -16,24 +17,24 @@ if cmd_folder not in sys.path:
     sys.path.insert(0, cmd_folder)
 
 import importlib
-virtdup = importlib.import_module("virt-dup")
+virtdup = importlib.import_module("virt_dup")
 
 
 
-#############################################
-# Py2/3 compatible tricks
-
-import contextlib
-try:
-    # Python 2
-    from cStringIO import StringIO
-except ImportError:
-    # Python 3
-    from io import StringIO
-
-if sys.version_info < (3, 2):
-    setattr(unittest.TestCase, "assertRegex",
-        unittest.TestCase.assertRegexpMatches)
+##############################################
+## Py2/3 compatible tricks
+#
+#import contextlib
+#try:
+#    # Python 2
+#    from cStringIO import StringIO
+#except ImportError:
+#    # Python 3
+#    from io import StringIO
+#
+#if sys.version_info < (3, 2):
+#    setattr(unittest.TestCase, "assertRegex",
+#        unittest.TestCase.assertRegexpMatches)
 
 
 
@@ -89,7 +90,7 @@ class CliTestCase(unittest.TestCase):
         self.assertRegex(str, 'positional arguments:')
         self.assertRegex(str, 'optional arguments:')
         self.assertRegex(str, 'examples:')
-        
+
     def test_usecase_dup_vm(self):
         with self.assertRaises(SystemExit) as cm:
             with capture_sys_output() as (stdout, stderr):

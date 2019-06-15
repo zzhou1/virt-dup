@@ -93,7 +93,7 @@ class CliTestCase(unittest.TestCase):
     def test_usecase_dup_vm(self):
         with self.assertRaises(SystemExit) as cm:
             with capture_sys_output() as (stdout, stderr):
-                self.cli.parse_args(['vm'])
+                self.cli.parse_args(['ut-vm'])
         self.assertEqual(cm.exception.code, 0)
         str=stdout.getvalue().strip()
         self.assertRegex(str, 'have fun:')
@@ -101,7 +101,7 @@ class CliTestCase(unittest.TestCase):
     def test_usecase_dup_vm_to_new(self):
         with self.assertRaises(SystemExit) as cm:
             with capture_sys_output() as (stdout, stderr):
-                self.cli.parse_args(['vm', 'vm1'])
+                self.cli.parse_args(['ut-vm', 'ut-vm1'])
         self.assertEqual(cm.exception.code, 0)
         str=stdout.getvalue().strip()
         self.assertRegex(str, 'have fun:')
@@ -109,7 +109,7 @@ class CliTestCase(unittest.TestCase):
     def test_usecase_dup_vm_with_verbose_info(self):
         with self.assertRaises(SystemExit) as cm:
             with capture_sys_output() as (stdout, stderr):
-                self.cli.parse_args(['-v', 'vm1'])
+                self.cli.parse_args(['-v', 'ut-vm'])
         self.assertEqual(cm.exception.code, 0)
         str=stdout.getvalue().strip()
         self.assertRegex(str, 'have fun:')

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 #-*- coding: utf-8 -*-
 
 import sys
@@ -6,25 +6,9 @@ import os
 import inspect
 import traceback
 import subprocess
-
 import re
-
-
-# test for py2 py3 compatability
-
-
-#############################################
-
-# Py2/3 compatible tricks
-
 import contextlib
-try:
-    # Python 2
-    from cStringIO import StringIO
-except ImportError:
-    # Python 3
-    from io import StringIO
-
+from io import StringIO
 
 
 #############################################
@@ -61,7 +45,7 @@ def launch_test(py_exec_path):
            +py_exec_path+' #################\n')
 
     cmd_folder = os.path.realpath(os.path.abspath(os.path.split(inspect.getfile(inspect.currentframe() ))[0]))
-    p = subprocess.Popen([py_exec_path, cmd_folder+"/test_virt-dup.py"],
+    p = subprocess.Popen([py_exec_path, cmd_folder+"/test_virt_dup.py"],
                          universal_newlines=True,
                          stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE)
@@ -71,21 +55,8 @@ def launch_test(py_exec_path):
 
 def main():
 
-    # https://stackoverflow.com/questions/4760215/running-shell-command-and-capturing-the-output
-    # https://stackoverflow.com/questions/41542613/utf-8-string-in-python-2-and-3
-
-    PY_PATH="/usr/bin/python2"
-    p2_test_result_summary = launch_test(PY_PATH)
-
     PY_PATH="/usr/bin/python3"
     p3_test_result_summary = launch_test(PY_PATH)
-
-    print ('#####################################################################')
-    if p2_test_result_summary == p3_test_result_summary:
-        print ('INFO: Python 2 and Python 3 test PASSED.\n')
-    else:
-        print ('ERROR: Python 2 and Python 3 test FAILED.\n')
-
 
 
 if __name__ == '__main__':

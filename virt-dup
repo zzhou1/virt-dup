@@ -269,7 +269,7 @@ if ! TEXT="$(virsh define ${DUP_XML} 2>&1)"; then
 fi
 
 log "$TEXT"
-echo "${NEW_VM} VM is newly defined"
+echo "INFO: ${NEW_VM} VM is newly defined"
 
 ####################################################################
 # duplicate the image files with --reflink capability
@@ -292,7 +292,7 @@ do
    if ! [ "$TMP" = "YES" ]; then
        echo "INFO: no reflink support fs, copying might take time..."
    fi
-   echo "$CMD"
+   echo "INFO: $CMD"
 
    run_cmd "$CMD"
    run_cmd "fsync $NEW_F"
@@ -376,15 +376,15 @@ function reset_hostname_in_block_device ()
          echo -e "\rINFO: reset ${NEW_VM}:/etc/hostname ........................ done"
 
          #### reset static IP back to dhcp
-         echo "reset ${NEW_VM}:static IP addresses to dhcp .......... "
+         echo "INFO: reset ${NEW_VM}:static IP addresses to dhcp .......... "
          CMD="find $M_POINT/etc/sysconfig/network*  
            -type f ! -name *lo ! -name *template
            -exec grep BOOTPROTO=.*static.* {} +"
-         ${CMD}
+         RES="`${CMD}`" && echo "      $RES"
          CMD="find $M_POINT/etc/sysconfig/network*  
            -type f ! -name *lo ! -name *template
            -exec grep ^IPADDR.*=........* {} +"
-         ${CMD}
+         RES="`${CMD}`" && echo "INFO:       $RES"
 
          run_cmd "find $M_POINT/etc/sysconfig/network* \
            -type f ! -name *lo ! -name *template \
@@ -392,7 +392,7 @@ function reset_hostname_in_block_device ()
          run_cmd "find $M_POINT/etc/sysconfig/network* \
            -type f ! -name *lo ! -name *template \
            -exec sed -i s/^\(IPADDR.*=\)........*/\1''/ {} +"
-         echo -e "\rINFO: reset ${NEW_VM}:static IP addresses to dhcp .......... done"
+         echo -e "\rINFO:       done"
 
          #### reset /etc/hosts leftover from the old vm 
          #echo "reset ${NEW_VM}:/etc/hosts ...................... " 
@@ -458,7 +458,7 @@ do
 done
 
 ####################################################################
-echo "now have fun: virsh start $NEW_VM"
+echo "INFO: now have fun: virsh start $NEW_VM"
 [ -z $IS_DEBUG ] || [ -e ${DUP_XML} ] && rm ${DUP_XML} 
 
 

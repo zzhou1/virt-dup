@@ -1,40 +1,26 @@
 #!/usr/bin/env python3
 #-*- coding: utf-8 -*-
-
+'pytest'
 import unittest
 import sys
 import os
 import inspect
-import traceback
+#import traceback
 import contextlib
+import importlib
 from io import StringIO
 
 # https://stackoverflow.com/questions/279237/import-a-module-from-a-relative-path
 #
-#cmd_folder = os.path.realpath(os.path.abspath(os.path.split(inspect.getfile(inspect.currentframe() ))[0]))
-cmd_folder = os.path.realpath(os.path.abspath(os.path.join(os.path.split(inspect.getfile(inspect.currentframe() ))[0],"../")))
-if cmd_folder not in sys.path:
-    sys.path.insert(0, cmd_folder)
+# cmd_folder = os.path.realpath(os.path.abspath(os.path.split(
+#                               inspect.getfile(inspect.currentframe() ))[0]))
+CMD_PATH = os.path.realpath(os.path.abspath(os.path.join(
+    os.path.split(inspect.getfile(inspect.currentframe()))[0], "../")))
+if CMD_PATH not in sys.path:
+    sys.path.insert(0, CMD_PATH)
 
-import importlib
-virtdup = importlib.import_module("virt_dup")
+VIRTDUP = importlib.import_module("virt_dup")
 
-
-
-##############################################
-## Py2/3 compatible tricks
-#
-#import contextlib
-#try:
-#    # Python 2
-#    from cStringIO import StringIO
-#except ImportError:
-#    # Python 3
-#    from io import StringIO
-#
-#if sys.version_info < (3, 2):
-#    setattr(unittest.TestCase, "assertRegex",
-#        unittest.TestCase.assertRegexpMatches)
 
 
 
@@ -42,6 +28,7 @@ virtdup = importlib.import_module("virt_dup")
 # temporarily replacing sys.stdout and sys.stderr
 @contextlib.contextmanager
 def capture_sys_output():
+    'docstring'
     capture_out, capture_err = StringIO(), StringIO()
     current_out, current_err = sys.stdout, sys.stderr
     try:
@@ -52,72 +39,91 @@ def capture_sys_output():
 
 
 class CliTestCase(unittest.TestCase):
+    'docstring'
     @classmethod
     def setUpClass(cls):
-        cls.cli= virtdup.cli_parser()
+        'docstring'
+        cls.cli = VIRTDUP.cli_parser()
 
-    # failure scenarios
-    def test_usecase_empty_args(self):
-        with self.assertRaises(SystemExit) as cm:
-            with capture_sys_output() as (stdout, stderr):
+    def test_failure_usecase_empty_args(self):
+        'docstring'
+        with self.assertRaises(SystemExit) as cmgr:
+            with capture_sys_output() as (_stdout, stderr):
                 self.cli.parse_args([])
-        self.assertEqual(cm.exception.code, 2)
+        txt = stderr.getvalue().strip()
+        self.assertRegex(txt, 'usage:')
+        self.assertRegex(txt, 'error:')
+        self.assertEqual(cmgr.exception.code, 2)
 
-    def test_usecase_just_verbose_and_missing_vm_name(self):
-        with self.assertRaises(SystemExit) as cm:
-            with capture_sys_output() as (stdout, stderr):
+
+    def test_failure_usecase_just_verbose_and_missing_vm_name(self):
+        'docstring'
+        with self.assertRaises(SystemExit) as cmgr:
+            with capture_sys_output() as (_stdout, stderr):
                 self.cli.parse_args(['-v'])
-        self.assertEqual(cm.exception.code, 2)
-        # 
-        # https://docs.python.org/2/library/unittest.html#assert-methods
-        # https://docs.python.org/3/library/unittest.html#assert-methods
-        # https://www.debuggex.com/cheatsheet/regex/python 
-        #       Note: . Any character except newline
-        # Python2: matching any character including newlines
-        #       [\s\S], [\w\W], or [\d\D]
-        #
-        str=stderr.getvalue().strip()
-        self.assertRegex(str, 'usage:')
-        self.assertRegex(str, 'error:')
+        txt = stderr.getvalue().strip()
+        self.assertRegex(txt, 'usage:')
+        self.assertRegex(txt, 'error:')
+        self.assertEqual(cmgr.exception.code, 2)
 
-    # user stories
+
     def test_usecase_help_args(self):
-        with self.assertRaises(SystemExit) as cm:
-            with capture_sys_output() as (stdout, stderr):
+        'docstring'
+        with self.assertRaises(SystemExit) as cmgr:
+            with capture_sys_output() as (stdout, _stderr):
                 self.cli.parse_args(['-h'])
-        self.assertEqual(cm.exception.code, 0)
-        str=stdout.getvalue().strip()
-        self.assertRegex(str, 'positional arguments:')
-        self.assertRegex(str, 'optional arguments:')
-        self.assertRegex(str, 'examples:')
+        txt = stdout.getvalue().strip()
+        self.assertRegex(txt, 'positional arguments:')
+        self.assertRegex(txt, 'optional arguments:')
+        self.assertRegex(txt, 'examples:')
+        self.assertEqual(cmgr.exception.code, 0)
 
     def test_usecase_dup_vm(self):
-        with self.assertRaises(SystemExit) as cm:
-            with capture_sys_output() as (stdout, stderr):
-                self.cli.parse_args(['ut-vm'])
-        self.assertEqual(cm.exception.code, 0)
-        str=stdout.getvalue().strip()
-        self.assertRegex(str, 'have fun:')
-
-    def test_usecase_dup_vm_to_new(self):
-        with self.assertRaises(SystemExit) as cm:
-            with capture_sys_output() as (stdout, stderr):
-                self.cli.parse_args(['ut-vm', 'ut-vm1'])
-        self.assertEqual(cm.exception.code, 0)
-        str=stdout.getvalue().strip()
-        self.assertRegex(str, 'have fun:')
+        'docstring'
+        with self.assertRaises(SystemExit) as cmgr:
+            with capture_sys_output() as (stdout, _stderr):
+                args = self.cli.parse_args(['ut-vm'])
+                VIRTDUP.process_args(args)
+        txt = stdout.getvalue().strip()
+        self.assertRegex(txt, 'have fun:')
+        self.assertRegex(txt, 'virsh start ut-vm_dup')
+        self.assertEqual(cmgr.exception.code, 0)
 
     def test_usecase_dup_vm_with_verbose_info(self):
-        with self.assertRaises(SystemExit) as cm:
-            with capture_sys_output() as (stdout, stderr):
-                self.cli.parse_args(['-v', 'ut-vm'])
-        self.assertEqual(cm.exception.code, 0)
-        str=stdout.getvalue().strip()
-        self.assertRegex(str, 'have fun:')
+        'docstring'
+        with self.assertRaises(SystemExit) as cmgr:
+            with capture_sys_output() as (stdout, _stderr):
+                args = self.cli.parse_args(['ut-vm', '-v'])
+                VIRTDUP.process_args(args)
+        txt = stdout.getvalue().strip()
+        self.assertRegex(txt, 'DEBUG:')
+        self.assertRegex(txt, 'have fun:')
+        self.assertRegex(txt, 'virsh start ut-vm_dup')
+        self.assertEqual(cmgr.exception.code, 0)
+
+    def test_usecase_dup_vm_to_new(self):
+        'docstring'
+        with self.assertRaises(SystemExit) as cmgr:
+            with capture_sys_output() as (stdout, _stderr):
+                args = self.cli.parse_args(['ut-vm', 'ut-vm1'])
+                VIRTDUP.process_args(args)
+        txt = stdout.getvalue().strip()
+        self.assertRegex(txt, 'have fun:')
+        self.assertRegex(txt, 'virsh start ut-vm1')
+        self.assertEqual(cmgr.exception.code, 0)
+
+    def test_usecase_dup_vm_to_multiple(self):
+        'docstring'
+        with self.assertRaises(SystemExit) as cmgr:
+            with capture_sys_output() as (stdout, _stderr):
+                args = self.cli.parse_args(['ut-vm', 'ut-vm1', 'ut-vm2'])
+                VIRTDUP.process_args(args)
+        txt = stdout.getvalue().strip()
+        self.assertRegex(txt, 'have fun:')
+        self.assertRegex(txt, 'virsh start ut-vm1')
+        self.assertRegex(txt, 'virsh start ut-vm2')
+        self.assertEqual(cmgr.exception.code, 0)
 
 
 if __name__ == '__main__':
     unittest.main()
-
-
-

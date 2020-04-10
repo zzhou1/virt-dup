@@ -27,9 +27,9 @@ DESCRIPTION = """\
 
   This tool will
   - reset hostname as the same name as the Virtual Machine
-  - reset MAC to be unique
-  - reset static IP to dhcp, if no '--change-ip' provided
-  - calibrate the host record in /etc/hosts with VM_NAME and if with --set-ip
+  - reset MAC addresses
+  - reset static IP to dhcp, if not specify '--change-ip'
+  - calibrate the host record in /etc/hosts with VM_NAME or from --set-ip
 
   Tips:
   - to let a image shared among Virtual Machines, you should
@@ -39,14 +39,8 @@ DESCRIPTION = """\
 
 EPILOG = """\
 examples:
-  virt-dup -h
-
   virt-dup VM_NAME
   It implies `virt-dup VM_NAME VM_NAME_dup`.
-  Basically, it appends "_dup" as the name of the new virtual machine.
-
-  virt-dup VMx VMy
-  "VMy" must not the substring of "VMx".
 
   virt-dup VMx VM1 VM2 VM3
   virt-dup VMx VM{1..3}
@@ -114,13 +108,10 @@ def generate_new_domxml(org_vm_name, org_domxml, new_vm_name):
     # the match with the prefix of vm name
     re_org_img = re.compile(r"(.*<source file=')(\S*/)(%s)(\S+)('.*/>)$"%
                             org_vm_name, re.M)
-    #re_all_img = re.compile(r"(.*<source file=')(\S*/)(\S+)('/>$)", re.M)
     re_domain_name = re.compile(r'<name>.*</name>')
     re_uuid = re.compile(r'<uuid>.*</uuid>')
     re_mac = re.compile(r'<mac address=.*/>', re.M)
 
-    #re_new_img0 = re.compile(r".*<source file='(\S*/%s\S+)'/>$"%
-    #                         new_vm_name, re.M)
     logger.debug("vm '%s' is under processing for '%s'",
                  org_vm_name, new_vm_name)
 
@@ -177,7 +168,7 @@ def ensure_cli_env_is_root():
         sys.exit(-1)
 
 
-def version_cmp(ver1, ver2):
+def knl_version_cmp(ver1, ver2):
     'kernel version comparison'
     def normalize(ver):
         return [int(x) for x in re.sub(r'(\.0+)*$', '', ver).split('.')]
@@ -198,10 +189,11 @@ def cp_reflink_img(org_img_file, new_img_file):
     assert len(out) == 3
     logger.debug('cp_reflink_img(): fstype = %s', out[1])
 
-    knl_ver = open('/proc/version', 'r').read().split()[2].split('-')[0]
+    with open('/proc/version', 'r') as fd_proc_version:
+        knl_ver = fd_proc_version.read().split()[2].split('-')[0]
     logger.debug('cp_reflink_img(): knl_version = %s', knl_ver)
 
-    if (out[1] == 'xfs' and version_cmp(knl_ver, '4.16') < 0 and
+    if (out[1] == 'xfs' and knl_version_cmp(knl_ver, '4.16') < 0 and
             out[1] not in ['ocfs2', 'btrfs']):
         logger.info('no reflink support fs, copying might take time...')
 
@@ -239,10 +231,12 @@ def manipulate_rootfs_in_qcow2(img_file):
     assert check_output('modprobe nbd max_part=8'.split()) == b''
 
     # lsblk -I43 only includes nbd devices, -d only disks, no partitions
-    for line in open('/proc/devices', 'r'):
-        if 'nbd' in line:
-            dev_major_nbd = line.split()[0]
-            break
+    #for line in open('/proc/devices', 'r'):
+    with open('/proc/devices', 'r') as fd_proc_dev:
+        for line in fd_proc_dev:
+            if 'nbd' in line:
+                dev_major_nbd = line.split()[0]
+                break
     assert dev_major_nbd.isdigit()
     lsblk_o = check_output('lsblk -I{} -nd -o NAME'
                            .format(dev_major_nbd)
@@ -288,17 +282,17 @@ def libvirt_define_new_vm_domains(org_vm_name, org_domxml, new_vm_name):
     'docstring'
     logger = logging.getLogger()
 
-    ret, _o, _e = run_cmd('virsh domstate ' + new_vm_name)
+    ret, stdout, _e = run_cmd('virsh domstate ' + new_vm_name)
     if ret == 0:
 
         # bring dom to 'shut off' state, if not
-        if 'shut off' not in _o:
+        if 'shut off' not in stdout:
             logger.info("vm '%s' is active. Call virsh to destroy it",
                         new_vm_name)
             ret, _o, _e = run_cmd('virsh destroy ' + new_vm_name)
             if ret:
                 logger.critical("failed to destroy '%s'", new_vm_name)
-                return 1
+                return False
 
         # now is safe to 'undefine' the dom
         logger.info("vm '%s' already exists. Call virsh to undefine it",
@@ -306,11 +300,12 @@ def libvirt_define_new_vm_domains(org_vm_name, org_domxml, new_vm_name):
         ret, _o, _e = run_cmd('virsh undefine ' + new_vm_name)
         if ret:
             logger.critical("failed to undefine '%s'", new_vm_name)
-            return 1
-
+            return False
 
     new_domxml = generate_new_domxml(org_vm_name, org_domxml, new_vm_name)
-    with tempfile.NamedTemporaryFile(prefix="virt-dup.domxml.",
+
+    # the temporary file under /tmp is deleted as soon as it is closed
+    with tempfile.NamedTemporaryFile(prefix="virt_dup_domxml_",
                                      suffix='.' + new_vm_name + '.xml',
                                      mode='w+t') as new_xml:
         new_xml.write(new_domxml)
@@ -319,7 +314,7 @@ def libvirt_define_new_vm_domains(org_vm_name, org_domxml, new_vm_name):
         logger.info(cmd)
         logger.debug(check_output(cmd.split()))
 
-    return 0
+    return True
 
 
 def processing_vm_and_img(args, org_vm_name, org_domxml):
@@ -331,7 +326,7 @@ def processing_vm_and_img(args, org_vm_name, org_domxml):
                             org_vm_name, re.M)
     for new_vm_name in args.vm_name:
 
-        if libvirt_define_new_vm_domains(org_vm_name, org_domxml, new_vm_name):
+        if not libvirt_define_new_vm_domains(org_vm_name, org_domxml, new_vm_name):
             continue
 
         for head, path, prefix, name, misc in re_org_img.findall(org_domxml):
@@ -349,10 +344,8 @@ def processing_vm_and_img(args, org_vm_name, org_domxml):
             #    manipulate_rootfs_in_raw_img(new_img_path)
 
 
-def  main():
+def  process_args(args):
     'docstring'
-
-    args = cli_parser().parse_args()
 
     config_logger(args)
     logger = logging.getLogger()
@@ -362,7 +355,7 @@ def  main():
     # check VM names
     for name in args.vm_name:
         if ' ' in name:
-            logging.critical(' the space char is prohibited, "%s"', name)
+            logger.critical(' the space char is prohibited, "%s"', name)
             sys.exit(-1)
 
     # get org_domxml
@@ -373,7 +366,7 @@ def  main():
 
     ret, _o, _e = run_cmd("virsh domstate %s"%(org_vm_name))
     if ret:
-        logging.critical("the virtual machine '%s' doesn't exist", org_vm_name)
+        logger.critical("the virtual machine '%s' doesn't exist", org_vm_name)
         sys.exit(-1)
 
     org_domxml = check_output(('virsh dumpxml ' + org_vm_name).split(),
@@ -381,7 +374,7 @@ def  main():
 
     # info user all image files shared among VM
     for _s, path, image_name, _e in re.findall(
-            r"(.*<source file=')(\S*/)(\S+)('/>)$", org_domxml, re.M):
+            r"(.*<source file=')(\S*/)(\S+)('.*/>)$", org_domxml, re.M):
         if re.match(org_vm_name, image_name):
             continue
         logger.info("'%s' is shared among VMs", path+image_name)
@@ -389,8 +382,16 @@ def  main():
     processing_vm_and_img(args, org_vm_name, org_domxml)
 
 
+    ret = ''
+    for name in args.vm_name:
+        ret = ret + "\n                               virsh start " + name
+    logger.info("now have fun:%s", ret)
+
+    sys.exit(0)
+
+
 #
 #
 #
 if __name__ == '__main__':
-    main()
+    process_args(cli_parser().parse_args())

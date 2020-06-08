@@ -4,6 +4,7 @@
 
 import argparse
 import os
+import glob
 import tempfile
 import sys
 import random
@@ -182,7 +183,7 @@ def cp_reflink_img(org_img_file, new_img_file):
     logger.debug("cp_reflink_img(): new = %s", new_img_file)
 
     out = check_output(['dirname', org_img_file]).strip()
-    logger.debug('cp_reflink_img(): dirname = %s', out)
+    logger.debug('cp_reflink_img(): dirname = %s', out.decode('utf-8'))
     out = check_output(['df', '--output=fstype', out],
                        universal_newlines=True).split('\n')
     logger.debug(out)
@@ -203,19 +204,54 @@ def cp_reflink_img(org_img_file, new_img_file):
     check_output(['fsync', new_img_file])
 
 
-def reset_hostname_in_block_device(dev):
-    'docstring'
-    logger = logging.getLogger()
-    logger.debug('reset_hostname_in_block_device( %r )', dev)
+class DevMntpoint(tempfile.TemporaryDirectory):
+    ''' upon destruction
+        - mpoint will umount
+        - the temporary directory under /tmp will be deleted afterwards
+    '''
 
-    assert check_output(['partprobe', dev]) == b''
-    name_fstype = check_output('lsblk -lno NAME,FSTYPE {}'
-                               .format(dev).split(),
-                               universal_newlines=True).splitlines()
-    for line in name_fstype:
-        if (len(line.split()) > 1 and
-                line.split()[1] in ['xfs', 'btrfs', 'ocfs2', 'ext4']):
-            logger.debug(line)
+    def __init__(self, suffix=None, prefix=None, dev=None):
+        self.logger = logging.getLogger()
+        if not os.path.exists('/dev/'+dev):
+            self.logger.error("DevMntpoint 'dev=' args must be valid under '/dev'")
+        self.dev = dev
+        super().__init__(suffix, prefix)
+    def __enter__(self):
+        super().__enter__()
+        cmd = 'mount /dev/' + self.dev + ' ' + self.name
+        self.logger.debug(cmd)
+        check_output(cmd.split())
+        return self.name
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        cmd = 'umount /dev/' + self.dev
+        self.logger.debug(cmd)
+        check_output(cmd.split())
+        super().__exit__(exc_type, exc_val, exc_tb)
+
+
+class OverlayMntpoint(tempfile.TemporaryDirectory):
+    ''' upon destruction
+        - mpoint will umount
+        - the temporary directory under /tmp will be deleted afterwards
+    '''
+
+    def __init__(self, suffix=None, prefix=None, mount_opt=None):
+        self.mount_opt = mount_opt
+        self.logger = logging.getLogger()
+        super().__init__(suffix, prefix)
+
+    def __enter__(self):
+        super().__enter__()
+        cmd = 'mount -t overlay overlay -o{} {}'.format(self.mount_opt, self.name)
+        self.logger.debug(cmd)
+        check_output(cmd.split())
+        return self.name
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        cmd = 'umount ' + self.name
+        self.logger.debug(cmd)
+        check_output(cmd.split())
+        super().__exit__(exc_type, exc_val, exc_tb)
 
 
 #def manipulate_rootfs_in_raw_img(img_file):
@@ -223,38 +259,213 @@ def reset_hostname_in_block_device(dev):
 #    return
 
 
-def manipulate_rootfs_in_qcow2(img_file):
+class SpareNbdImgfile():
+    '''
+                self.img_file
+                self.spare_nbd
+    '''
+
+    def __init__(self, img_file=None):
+        self.logger = logging.getLogger()
+        if not os.path.exists(img_file):
+            self.logger.error("NbdImg 'img_file=' args not exist")
+        self.img_file = img_file
+
+        # find_unused_nbd_dev_node()
+        assert check_output('modprobe nbd max_part=8'.split()) == b''
+
+        # lsblk -I43 only includes nbd devices, -d only disks, no partitions
+        with open('/proc/devices', 'r') as fd_proc_dev:
+            for line in fd_proc_dev:
+                if 'nbd' in line:
+                    dev_major_nbd = line.split()[0]
+                    break
+        assert dev_major_nbd.isdigit()
+        lsblk_o = check_output('lsblk -I{} -nd -o NAME'
+                               .format(dev_major_nbd)
+                               .split()).decode('utf-8')
+
+        for i in range(100):
+            if 'nbd{}'.format(i) not in lsblk_o:
+                #self.spare_nbd_id = i
+                self.spare_nbd = '/dev/nbd'+str(i)
+                self.logger.debug('spare_nbd = %s', self.spare_nbd)
+                break
+
+    def __enter__(self):
+        cmd = 'qemu-nbd --connect={} {}'.format(self.spare_nbd, self.img_file)
+        self.logger.debug(cmd)
+        assert check_output(cmd.split()) == b''
+        return self.spare_nbd
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        cmd = 'qemu-nbd --disconnect ' + self.spare_nbd
+        self.logger.debug(cmd)
+        ret = check_output(cmd.split()).decode('utf-8').strip()
+        self.logger.debug(ret)
+        assert 'disconnected' in ret
+
+        # flush kernel device data
+        run_cmd('partprobe ' + self.spare_nbd)
+
+        # double confirm kernel data get cleaned up indeed
+        ret, _o, _e = run_cmd('lsblk ' + self.spare_nbd)
+        #logger.debug(ret)
+        assert ret == 32
+
+    def __repr__(self):
+        return self.spare_nbd
+
+
+def reset_hostname(sysroot_etc, new_vm_name):
+    'docstring'
+    logger = logging.getLogger()
+    logger.debug('reset_hostname(%s)', sysroot_etc)
+
+    old_hostname = None
+    path = str(sysroot_etc)+'/hostname'
+    if os.path.exists(path):
+        with open(path) as file:
+            ret = file.read().strip()
+            old_hostname = ret
+
+    with open(sysroot_etc+'/hostname', 'w') as file:
+        file.write(new_vm_name)
+        file.flush()
+        logger.debug('reset '+new_vm_name+':'+file.name)
+        logger.info("reset /etc/hostname:%s from '%s'", new_vm_name, old_hostname)
+
+    if os.path.exists(sysroot_etc+'/hosts') and len(old_hostname) > 0:
+        with open(sysroot_etc+'/hosts', 'r') as file:
+            old_hosts_txt = file.read()
+            logger.debug('old_hosts_txt= %s', old_hosts_txt)
+
+        if old_hostname in old_hosts_txt:
+            with open(sysroot_etc+'/hosts', 'w') as file:
+                file.write(old_hosts_txt.replace(old_hostname, new_vm_name))
+                file.flush()
+                logger.debug('reset '+new_vm_name+':'+file.name)
+                logger.info('reset %s:/etc/hosts', new_vm_name)
+
+
+def reset_ip_addr(sysroot_etc, new_ip):
+    'docstring'
+    logger = logging.getLogger()
+    logger.debug('reset_ip_addr(%s)', sysroot_etc)
+
+
+def reset_ip_static_to_dhcp(sysroot_etc):
+    'docstring'
+    logger = logging.getLogger()
+    logger.debug('reset_ip_static_to_dhcp(%s)', sysroot_etc)
+
+
+
+def manipulate_etc(args, sysroot_etc, new_vm_name):
+    'docstring'
+    logger = logging.getLogger()
+    logger.debug('manipulate_etc( %s )', sysroot_etc)
+    if sysroot_etc is None:
+        logger.error('sysroot_etc must not None')
+        return
+
+    reset_hostname(sysroot_etc, new_vm_name)
+
+    reset_ip_static_to_dhcp(sysroot_etc)
+
+    if args.set_ip is not None:
+        reset_ip_addr(sysroot_etc, args.set_ip)
+
+
+def is_rootfs(path_sysroot):
+    'docstring'
+
+    return (os.path.exists('{}/etc'.format(path_sysroot)) and
+            os.path.exists('{}/boot'.format(path_sysroot)) and
+            os.path.exists('{}/var'.format(path_sysroot)))
+
+
+def manipulate_rootfs_in_qcow2(args, img_file, new_vm_name):
     'docstring'
     logger = logging.getLogger()
 
-    # find_unused_nbd_dev_node()
-    assert check_output('modprobe nbd max_part=8'.split()) == b''
+    with SpareNbdImgfile(img_file) as spare_nbd:
 
-    # lsblk -I43 only includes nbd devices, -d only disks, no partitions
-    #for line in open('/proc/devices', 'r'):
-    with open('/proc/devices', 'r') as fd_proc_dev:
-        for line in fd_proc_dev:
-            if 'nbd' in line:
-                dev_major_nbd = line.split()[0]
-                break
-    assert dev_major_nbd.isdigit()
-    lsblk_o = check_output('lsblk -I{} -nd -o NAME'
-                           .format(dev_major_nbd)
-                           .split()).decode('utf-8')
-    for i in range(100):
-        if 'nbd{}'.format(i) not in lsblk_o:
-            break
+        microos_rootfs_dev = None
+        assert check_output(['partprobe', spare_nbd]) == b''
 
-    # setup the nbd device
-    cmd = 'qemu-nbd --connect=/dev/nbd{} {}'.format(i, img_file)
-    logger.debug(cmd)
-    check_output(cmd.split())
+        # partition_and_fstype
+        for line in check_output('lsblk -lno NAME,FSTYPE {}'
+                                 .format(spare_nbd).split(),
+                                 universal_newlines=True).splitlines():
+            if not (len(line.split()) > 1 and
+                    line.split()[1] in ['xfs', 'btrfs', 'ocfs2', 'ext4']):
+                continue
 
-    reset_hostname_in_block_device('/dev/nbd' + str(i))
+            logger.debug(line)
+            with DevMntpoint(suffix='.'+new_vm_name,
+                             prefix="virt_dup_mnt_",
+                             dev=line.split()[0]) as mpoint:
 
-    cmd = 'qemu-nbd --disconnect /dev/nbd' + str(i)
-    logger.debug(cmd)
-    check_output(cmd.split())
+                logger.debug('mpoint = %s', mpoint)
+
+                # rootfs - xfs, ext4
+                if not line.split()[1] == 'btrfs':
+                    if is_rootfs(mpoint):
+                        manipulate_etc(args, mpoint+'/etc', new_vm_name)
+                        return
+                    continue
+
+                cmd = 'btrfs property get -ts {}'.format(mpoint)
+                logger.debug(cmd)
+                ret = check_output(cmd.split()).strip().decode('utf-8')
+                logger.debug(ret)
+
+                # rootfs - btrfs normal - non- microos_rootfs
+                if (ret == 'ro=false' and is_rootfs(mpoint) and
+                        microos_rootfs_dev is None):
+                    manipulate_etc(args, mpoint+'/etc', new_vm_name)
+                    return
+
+                # rootfs - microos_rootfs partition
+                if ret == 'ro=true' and is_rootfs(mpoint):
+                    microos_rootfs_dev = line.split()[0]
+                    continue
+
+                # rootfs - microos_var:lib/overlay/x/etc/...
+                if not os.path.exists('{}/lib/overlay'.format(mpoint)):
+                    continue
+
+                with DevMntpoint(suffix='.'+new_vm_name,
+                                 prefix="virt_dup_mnt_",
+                                 dev=microos_rootfs_dev) as microos_rootfs:
+
+                    logger.debug('microos_rootfs = %s', microos_rootfs)
+                    logger.debug('microos_var = %s', mpoint)
+
+                    if not os.path.exists(microos_rootfs+'/etc/fstab'):
+                        logger.error('microos_rootfs must have /etc/fstab')
+                        return
+
+                    # overlay mount option
+                    with open(microos_rootfs+'/etc/fstab', 'r') as file:
+                        ret = file.read()
+                        udir = re.search(r'.*(upperdir=[^,]+),', ret).group(1)
+                        ldir = re.search(r'.*(lowerdir=[^,]+),', ret).group(1)
+                        wdir = re.search(r'.*(workdir=[^,]+),', ret).group(1)
+                        logger.debug('%s', udir)
+                        logger.debug('%s', ldir)
+                        logger.debug('%s', wdir)
+                        ret = '{},{},{}'.format(ldir, udir, wdir)
+                        ret = ret.replace('/sysroot/etc', microos_rootfs+'/etc')
+                        ret = ret.replace('/sysroot/var', mpoint)
+
+                    # construct overlayfs for microos_var_etc
+                    with OverlayMntpoint(prefix='virt_dup_microos_etc_',
+                                         suffix='.'+new_vm_name,
+                                         mount_opt=ret) as mpoint:
+                        manipulate_etc(args, mpoint, new_vm_name)
+                        return
 
 
 def config_logger(args):
@@ -312,7 +523,9 @@ def libvirt_define_new_vm_domains(org_vm_name, org_domxml, new_vm_name):
         new_xml.flush()
         cmd = 'virsh define '+new_xml.name
         logger.info(cmd)
-        logger.debug(check_output(cmd.split()))
+        ret = check_output(cmd.split()).decode('utf-8').strip()
+        logger.debug(ret)
+        assert 'defined' in ret
 
     return True
 
@@ -341,7 +554,7 @@ def processing_vm_and_img(args, org_vm_name, org_domxml):
             if 'QCOW' in ret:
                 manipulate_rootfs_in_qcow2(args, new_img_path, new_vm_name)
             #else:
-            #    manipulate_rootfs_in_raw_img(new_img_path)
+            #    manipulate_rootfs_in_raw_img(args, new_img_path)
 
 
 def  process_args(args):

@@ -351,13 +351,50 @@ def reset_hostname(sysroot_etc, new_vm_name):
 def reset_ip_addr(sysroot_etc, new_ip):
     'docstring'
     logger = logging.getLogger()
-    logger.debug('reset_ip_addr(%s)', sysroot_etc)
+    logger.debug('reset_ip_addr(%s, %s)', sysroot_etc, new_ip)
 
 
-def reset_ip_static_to_dhcp(sysroot_etc):
+def reset_ip_static_to_dhcp(sysroot_etc, new_vm_name):
     'docstring'
     logger = logging.getLogger()
     logger.debug('reset_ip_static_to_dhcp(%s)', sysroot_etc)
+
+    for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
+        if 'ifcfg-lo' in i or 'ifcfg.template' in i:
+            continue
+        with open(i, 'r') as file:
+            ifcfg = file.read()
+
+        pattern = re.compile(r'^\s*BOOTPROTO\s*=.*static.*$', re.M)
+        ret = pattern.search(ifcfg)
+        if ret is not None:
+            ifcfg_changed = True
+            ifcfg = pattern.sub("BOOTPROTO='dhcp'", ifcfg)
+            logger.info("reset %s:%s: BOOTPROTO='dhcp', from 'static'",
+                        new_vm_name,
+                        re.sub(r'.*/etc/', '/etc/', i))
+
+        pattern = re.compile(r"^(\s*IPADDR[_\d]*\s*=)([\s\"']*\d+[\d./\"']*).*$", re.M)
+        for ret, ip_cidr in pattern.findall(ifcfg, re.M):
+            ifcfg_changed = True
+            logger.info("reset %s:%s: %s'', from %s",
+                        new_vm_name,
+                        re.sub(r'.*/etc/', '/etc/', i),
+                        ret, ip_cidr)
+        ifcfg = pattern.sub(r"\1''", ifcfg)
+
+        if ifcfg_changed:
+            logger.debug(ifcfg)
+            with open(i, 'w') as file:
+                file.write(ifcfg)
+                file.flush()
+
+
+def change_ip(sysroot_etc, new_vm_name, arg_change_ip):
+    'docstring'
+    logger = logging.getLogger()
+    logger.debug('change_ip( %s )', sysroot_etc)
+
 
 
 
@@ -371,7 +408,7 @@ def manipulate_etc(args, sysroot_etc, new_vm_name):
 
     reset_hostname(sysroot_etc, new_vm_name)
 
-    reset_ip_static_to_dhcp(sysroot_etc)
+    reset_ip_static_to_dhcp(sysroot_etc, new_vm_name)
 
     if args.set_ip is not None:
         reset_ip_addr(sysroot_etc, args.set_ip)

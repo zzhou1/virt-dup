@@ -30,7 +30,7 @@ DESCRIPTION = """\
   - reset hostname as the same name as the Virtual Machine
   - reset MAC addresses
   - reset static IP to dhcp, if not specify '--change-ip'
-  - calibrate the host record in /etc/hosts with VM_NAME or from --set-ip
+  - calibrate the host record in /etc/hosts with VM_NAME or from --set-ip-cidr
 
   Tips:
   - to let a image shared among Virtual Machines, you should
@@ -40,15 +40,11 @@ DESCRIPTION = """\
 
 EPILOG = """\
 examples:
-  virt-dup VM_NAME
-  It implies `virt-dup VM_NAME VM_NAME_dup`.
-
+  virt-dup VM_NAME  # it implies `virt-dup VM_NAME VM_NAME_dup`
   virt-dup VMx VM1 VM2 VM3
-  virt-dup VMx VM{1..3}
-  This will create three Virtual Machines, namely, VM1 VM2 VM3.
-
-  virt-dup --set-ip 192.168.151.101 VMx VM{1..16}
-  It creates 16 virtual machines, which has its own unique ip from 101 to 116.
+  virt-dup VMx VM{1..3} --set-ip-cidr 192.168.151.101
+  virt-dup VMx VM{1..3} --set-ip-cidr 192.168.151.101/16
+  It creates 3 virtual machines, which has its own unique ip from 101 to 103
 
   Use the following example with care!
 
@@ -153,9 +149,9 @@ def cli_parser():
                      nargs='+')
     ap1.add_argument('-v', '--verbose', '-d', '--debug',
                      action='store_true')
-    ap1.add_argument('--set-ip', dest='set_ip',
-                     metavar='IPADDR', nargs=1,
-                     help="Add IPADDR to the first NIC")
+    ap1.add_argument('--set-ip-cidr', dest='set_ip_cidr',
+                     metavar='IPCIDR', nargs=1,
+                     help="Add IP_CIDR to the first NIC")
     ap1.add_argument('--change-ip', dest='change_ip',
                      metavar='from:to[,from:to,...]', nargs=1,
                      help="leverage the substring of IP is handy. Use it well!")
@@ -337,21 +333,72 @@ def reset_hostname(sysroot_etc, new_vm_name):
 
     if os.path.exists(sysroot_etc+'/hosts') and len(old_hostname) > 0:
         with open(sysroot_etc+'/hosts', 'r') as file:
-            old_hosts_txt = file.read()
-            logger.debug('old_hosts_txt= %s', old_hosts_txt)
+            old_hosts = file.read()
+            logger.debug('old_hosts= %s', old_hosts)
 
-        if old_hostname in old_hosts_txt:
+        if old_hostname in old_hosts:
             with open(sysroot_etc+'/hosts', 'w') as file:
-                file.write(old_hosts_txt.replace(old_hostname, new_vm_name))
+                new_hosts = old_hosts.replace(old_hostname, new_vm_name)
+                file.write(new_hosts)
                 file.flush()
+
                 logger.debug('reset '+new_vm_name+':'+file.name)
-                logger.info('reset %s:/etc/hosts', new_vm_name)
+                for i in new_hosts.splitlines():
+                    if new_vm_name in i:
+                        logger.info("reset %s:/etc/hosts: %s", new_vm_name, i)
 
 
-def reset_ip_addr(sysroot_etc, new_ip):
+def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
     'docstring'
     logger = logging.getLogger()
-    logger.debug('reset_ip_addr(%s, %s)', sysroot_etc, new_ip)
+    logger.debug('set_ip_cidr(%s, %s)', sysroot_etc, new_ip_cidr)
+
+    pattern = r'^(([0-9]+.){3}[0-9]+)([/0-9]*)$'
+    ret = re.search(pattern, new_ip_cidr)
+    if ret is None:
+        logger.error('wrong ip CIDR format, expecting x.x.x.x/yy')
+    new_ip = ret.group(0)
+    logger.debug(new_ip)
+
+    ###
+    for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
+        if 'ifcfg-lo' in i:
+            continue
+
+        with open(i, 'r') as file:
+            ifcfg = file.read()
+
+        # set new_ip to the first match only
+        pattern = re.compile(r"^([\s]*IPADDR[_0-9]*[\s]*=[\s]*)([0-9./']*)", re.M)
+        ret = pattern.search(ifcfg)
+        if ret is not None:
+            new_ifcfg = "{}'{}'".format(ret.group(1), new_ip)
+            ifcfg = pattern.sub(new_ifcfg, ifcfg, 1)
+            logger.info("set   %s:%s: %s, from %s",
+                        new_vm_name,
+                        re.sub(r'.*/etc/', '/etc/', i),
+                        new_ifcfg,
+                        ret.group(2))
+
+            logger.debug(ifcfg)
+            with open(i, 'w') as file:
+                file.write(ifcfg)
+                file.flush()
+            break
+
+    ###
+    with open(sysroot_etc+'/hosts', 'r') as file:
+        old_hosts = file.read()
+
+    pattern = re.compile(r'(([0-9]+.){3}[0-9]+)(.*\b%s\b.*)$'%new_vm_name, re.M)
+    ret = re.search(pattern, old_hosts)
+    if ret is not None:
+        new_hosts = re.sub(pattern, r'%s\3'%new_ip, old_hosts)
+        logger.debug('new_hosts\n%s', new_hosts)
+        logger.info("set   %s:/etc/hosts: %s", new_vm_name, new_ip+ret.group(3))
+        with open(sysroot_etc+'/hosts', 'w') as file:
+            file.write(new_hosts)
+            file.flush()
 
 
 def reset_ip_static_to_dhcp(sysroot_etc, new_vm_name):
@@ -360,8 +407,10 @@ def reset_ip_static_to_dhcp(sysroot_etc, new_vm_name):
     logger.debug('reset_ip_static_to_dhcp(%s)', sysroot_etc)
 
     for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
-        if 'ifcfg-lo' in i or 'ifcfg.template' in i:
+        if 'ifcfg-lo' in i:
             continue
+
+        ifcfg_changed = False
         with open(i, 'r') as file:
             ifcfg = file.read()
 
@@ -408,10 +457,14 @@ def manipulate_etc(args, sysroot_etc, new_vm_name):
 
     reset_hostname(sysroot_etc, new_vm_name)
 
-    reset_ip_static_to_dhcp(sysroot_etc, new_vm_name)
+    if args.change_ip is None:
+        reset_ip_static_to_dhcp(sysroot_etc, new_vm_name)
+    else:
+        change_ip(sysroot_etc, new_vm_name, args.change_ip[0])
+        return
 
-    if args.set_ip is not None:
-        reset_ip_addr(sysroot_etc, args.set_ip)
+    if args.set_ip_cidr is not None:
+        set_ip_cidr(sysroot_etc, new_vm_name, args.set_ip_cidr[0])
 
 
 def is_rootfs(path_sysroot):
@@ -593,6 +646,12 @@ def processing_vm_and_img(args, org_vm_name, org_domxml):
             #else:
             #    manipulate_rootfs_in_raw_img(args, new_img_path)
 
+        if args.set_ip_cidr is not None:
+            ret = re.search(r'^([0-9]+.[0-9]+.[0-9]+.)([0-9]+)([/0-9]*)$',
+                            args.set_ip_cidr[0])
+            tmp = str(int(ret.group(2))+1)
+            args.set_ip_cidr[0] = ret.group(1)+tmp+ret.group(3)
+
 
 def  process_args(args):
     'docstring'
@@ -607,6 +666,11 @@ def  process_args(args):
         if ' ' in name:
             logger.critical(' the space char is prohibited, "%s"', name)
             sys.exit(-1)
+
+    # --set-ip-cidr and --change-ip can't co-exist
+    if args.set_ip_cidr is not None and args.change_ip is not None:
+        logger.critical("--set-ip-cidr and --change-ip can't co-exist")
+        sys.exit(-1)
 
     # get org_domxml
     org_vm_name = args.vm_name[0]

@@ -15,22 +15,17 @@ import logging
 from subprocess import check_output
 
 DESCRIPTION = """\
-  Motivation of this tool is to duplicate Virtual Machines in seconds. To
-  reach that speed, the trick is to deploy all VM images in the filesystem with
-  the native COW(--reflink) capability, eg. btrfs, xfs-4.16, ocfs2, etc.
-
-  It is created, just because virt-clone does not yet leverage the
-  native COW(--reflink) capability of the filesystem to duplicate qcow2.
-  It only support RAW by now at the end of 2018. virt-clone might take
-  noticeable time to duplicate qcow2 image files. Well, it is
-  understandable virt-clone wants to keep the advantage of qcow2 backing
-  file functionality for existent use cases.
+  This tool is to duplicate Virtual Machines in seconds. To reach that speed,
+  the trick is to deploy all VM images in the filesystem with the native
+  COW(--reflink) capability, eg. btrfs, xfs-4.16, ocfs2, etc. Noted that
+  virt-clone leverages the native COW(--reflink) capability of the filesystem
+  to duplicate RAW, but not for qcow2 by now at the end of 2018.
 
   This tool will
-  - reset hostname as the same name as the Virtual Machine
+  - reset hostname as same as the Virtual Machine name
   - reset MAC addresses
   - reset static IP to dhcp, if not specify '--change-ip'
-  - calibrate the host record in /etc/hosts with VM_NAME or from --set-ip-cidr
+  - calibrate /etc/hosts with VM_NAME and --set-ip-cidr, --change-ip
 
   Tips:
   - to let a image shared among Virtual Machines, you should
@@ -42,15 +37,13 @@ EPILOG = """\
 examples:
   virt-dup VM_NAME  # it implies `virt-dup VM_NAME VM_NAME_dup`
   virt-dup VMx VM1 VM2 VM3
-  virt-dup VMx VM{1..3} --set-ip-cidr 192.168.151.101
+
+  To create 3 virtual machines, which has its own unique ip from 101 to 103
+  virt-dup VMx VM{1..3} --set-ip-cidr 2001:db8:dead:beef::101
   virt-dup VMx VM{1..3} --set-ip-cidr 192.168.151.101/16
-  It creates 3 virtual machines, which has its own unique ip from 101 to 103
 
   Use the following example with care!
-
-  virt-dup VMx --change-ip VMx:VMy,192.168.150:192.168.151,IpSubStr1:IpSubStr2
-  It applies: 
-      sed -i 's/\\(IPADDR.*\\)$VMx/\\1$VMy/g' /etc/sysconfig/network/ifcfg*
+  virt-dup VMx VMy --change-ip str1,str2 192.168.150,192.168.151
 
 """
 
@@ -134,7 +127,6 @@ def generate_new_domxml(org_vm_name, org_domxml, new_vm_name):
     logger.debug(re_uuid.findall(new_domxml))
     for mac in re_mac.findall(new_domxml):
         logger.debug("['%s']", mac)
-    #logger.debug(re_new_img0.findall(new_domxml))
     logger.debug(new_domxml)
     return new_domxml
 
@@ -150,11 +142,11 @@ def cli_parser():
     ap1.add_argument('-v', '--verbose', '-d', '--debug',
                      action='store_true')
     ap1.add_argument('--set-ip-cidr', dest='set_ip_cidr',
-                     metavar='IPCIDR', nargs=1,
-                     help="Add IP_CIDR to the first NIC")
+                     metavar='CIDR', nargs=1,
+                     help="add IP_CIDR to the first NIC")
     ap1.add_argument('--change-ip', dest='change_ip',
-                     metavar='from:to[,from:to,...]', nargs=1,
-                     help="leverage the substring of IP is handy. Use it well!")
+                     metavar='from,to', nargs='+',
+                     help="string replace of IP is handy. Use it with care!")
     return ap1
 
 
@@ -306,7 +298,6 @@ class SpareNbdImgfile():
 
         # double confirm kernel data get cleaned up indeed
         ret, _o, _e = run_cmd('lsblk ' + self.spare_nbd)
-        #logger.debug(ret)
         assert ret == 32
 
     def __repr__(self):
@@ -329,7 +320,7 @@ def reset_hostname(sysroot_etc, new_vm_name):
         file.write(new_vm_name)
         file.flush()
         logger.debug('reset '+new_vm_name+':'+file.name)
-        logger.info("reset /etc/hostname:%s from '%s'", new_vm_name, old_hostname)
+        logger.info("reset /etc/hostname to '%s' from '%s'", new_vm_name, old_hostname)
 
     if os.path.exists(sysroot_etc+'/hosts') and len(old_hostname) > 0:
         with open(sysroot_etc+'/hosts', 'r') as file:
@@ -345,7 +336,8 @@ def reset_hostname(sysroot_etc, new_vm_name):
                 logger.debug('reset '+new_vm_name+':'+file.name)
                 for i in new_hosts.splitlines():
                     if new_vm_name in i:
-                        logger.info("reset %s:/etc/hosts: %s", new_vm_name, i)
+                        logger.info("reset  %s:/etc/hosts", new_vm_name)
+                        break
 
 
 def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
@@ -438,11 +430,50 @@ def reset_ip_static_to_dhcp(sysroot_etc, new_vm_name):
                 file.write(ifcfg)
                 file.flush()
 
-
 def change_ip(sysroot_etc, new_vm_name, arg_change_ip):
     'docstring'
     logger = logging.getLogger()
-    logger.debug('change_ip( %s )', sysroot_etc)
+
+    for opt_change_ip in arg_change_ip:
+        old_ip = opt_change_ip.split(',')[0]
+        new_ip = opt_change_ip.split(',')[1]
+
+        logger.debug('change_ip( %s, %s, %s,%s )',
+                     sysroot_etc, new_vm_name, old_ip, new_ip )
+
+        ### ipaddr in ifcfg-*
+        for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
+            if 'ifcfg-lo' in i:
+                continue
+
+            with open(i, 'r') as file:
+                ifcfg = file.read()
+
+            rcode = ifcfg.find(old_ip)
+            ret = ifcfg.replace(old_ip, new_ip)
+            if rcode > -1:
+                logger.info("change %s:%s: %s",
+                            new_vm_name,
+                            re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i),
+                            new_ip)
+
+                logger.debug(ret)
+                with open(i, 'w') as file:
+                    file.write(ret)
+                    file.flush()
+
+        ### /etc/hosts
+        with open(sysroot_etc+'/hosts', 'r') as file:
+            old_hosts = file.read()
+
+        rcode = old_hosts.find(old_ip)
+        ret = old_hosts.replace(old_ip, new_ip)
+        logger.debug(ret)
+        if rcode > -1:
+            logger.info("change %s:/etc/hosts: %s", new_vm_name, new_ip)
+            with open(sysroot_etc+'/hosts', 'w') as file:
+                file.write(ret)
+                file.flush()
 
 
 
@@ -460,7 +491,7 @@ def manipulate_etc(args, sysroot_etc, new_vm_name):
     if args.change_ip is None:
         reset_ip_static_to_dhcp(sysroot_etc, new_vm_name)
     else:
-        change_ip(sysroot_etc, new_vm_name, args.change_ip[0])
+        change_ip(sysroot_etc, new_vm_name, args.change_ip)
         return
 
     if args.set_ip_cidr is not None:

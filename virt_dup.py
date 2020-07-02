@@ -12,6 +12,7 @@ import uuid
 import subprocess
 import re
 import logging
+import ipaddress
 from subprocess import check_output
 
 DESCRIPTION = """\
@@ -345,14 +346,7 @@ def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
     logger = logging.getLogger()
     logger.debug('set_ip_cidr(%s, %s)', sysroot_etc, new_ip_cidr)
 
-    pattern = r'^(([0-9]+.){3}[0-9]+)([/0-9]*)$'
-    ret = re.search(pattern, new_ip_cidr)
-    if ret is None:
-        logger.error('wrong ip CIDR format, expecting x.x.x.x/yy')
-    new_ip = ret.group(0)
-    logger.debug(new_ip)
-
-    ###
+    ### ipaddr in ifcfg-*
     for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
         if 'ifcfg-lo' in i:
             continue
@@ -360,34 +354,42 @@ def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
         with open(i, 'r') as file:
             ifcfg = file.read()
 
-        # set new_ip to the first match only
-        pattern = re.compile(r"^([\s]*IPADDR[_0-9]*[\s]*=[\s]*)([0-9./']*)", re.M)
+        # set new_ip_cidr to the first match IPADDR_x, or append
+        pattern = re.compile(r"^(\s*IPADDR_\d+\s*=\s*)(.*)$", re.M)
         ret = pattern.search(ifcfg)
         if ret is not None:
-            new_ifcfg = "{}'{}'".format(ret.group(1), new_ip)
+            new_ifcfg = "{}'{}'".format(ret.group(1), new_ip_cidr)
             ifcfg = pattern.sub(new_ifcfg, ifcfg, 1)
             logger.info("set   %s:%s: %s, from %s",
                         new_vm_name,
-                        re.sub(r'.*/etc/', '/etc/', i),
+                        re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i),
                         new_ifcfg,
                         ret.group(2))
+        else:  # need append IPADDR_1
+            new_ifcfg = 'IPADDR_1=' + "'" + new_ip_cidr + "'"
+            ifcfg = ifcfg + new_ifcfg
+            logger.info("set   %s:%s: %s (appended)",
+                        new_vm_name,
+                        re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i),
+                        new_ifcfg)
 
-            logger.debug(ifcfg)
-            with open(i, 'w') as file:
-                file.write(ifcfg)
-                file.flush()
-            break
+        logger.debug(ifcfg)
+        with open(i, 'w') as file:
+            file.write(ifcfg)
+            file.flush()
+        break
 
-    ###
+    ### /etc/hosts
     with open(sysroot_etc+'/hosts', 'r') as file:
         old_hosts = file.read()
 
-    pattern = re.compile(r'(([0-9]+.){3}[0-9]+)(.*\b%s\b.*)$'%new_vm_name, re.M)
+    new_ip = str(ipaddress.ip_interface(new_ip_cidr).ip)
+    pattern = re.compile(r'^\s*([\w:\.]+)(\s+\b%s[\b\.].*)$'%new_vm_name, re.M)
     ret = re.search(pattern, old_hosts)
     if ret is not None:
-        new_hosts = re.sub(pattern, r'%s\3'%new_ip, old_hosts)
+        new_hosts = re.sub(pattern, r'%s\2'%new_ip, old_hosts)
         logger.debug('new_hosts\n%s', new_hosts)
-        logger.info("set   %s:/etc/hosts: %s", new_vm_name, new_ip+ret.group(3))
+        logger.info("set   %s:/etc/hosts: %s%s", new_vm_name, new_ip, ret.group(2))
         with open(sysroot_etc+'/hosts', 'w') as file:
             file.write(new_hosts)
             file.flush()
@@ -413,14 +415,14 @@ def reset_ip_static_to_dhcp(sysroot_etc, new_vm_name):
             ifcfg = pattern.sub("BOOTPROTO='dhcp'", ifcfg)
             logger.info("reset %s:%s: BOOTPROTO='dhcp', from 'static'",
                         new_vm_name,
-                        re.sub(r'.*/etc/', '/etc/', i))
+                        re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i))
 
-        pattern = re.compile(r"^(\s*IPADDR[_\d]*\s*=)([\s\"']*\d+[\d./\"']*).*$", re.M)
+        pattern = re.compile(r"^(\s*IPADDR[_\d]*\s*=)([\s\"']*[\w\.:/]+[\"']*)$", re.M)
         for ret, ip_cidr in pattern.findall(ifcfg, re.M):
             ifcfg_changed = True
             logger.info("reset %s:%s: %s'', from %s",
                         new_vm_name,
-                        re.sub(r'.*/etc/', '/etc/', i),
+                        re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i),
                         ret, ip_cidr)
         ifcfg = pattern.sub(r"\1''", ifcfg)
 
@@ -678,10 +680,14 @@ def processing_vm_and_img(args, org_vm_name, org_domxml):
             #    manipulate_rootfs_in_raw_img(args, new_img_path)
 
         if args.set_ip_cidr is not None:
-            ret = re.search(r'^([0-9]+.[0-9]+.[0-9]+.)([0-9]+)([/0-9]*)$',
-                            args.set_ip_cidr[0])
-            tmp = str(int(ret.group(2))+1)
-            args.set_ip_cidr[0] = ret.group(1)+tmp+ret.group(3)
+            ipif_b = int(ipaddress.ip_interface(args.set_ip_cidr[0])) + 1
+            new_ip_cidr = str(ipaddress.ip_address(ipif_b))
+
+            ret = re.search(r'/\d+', args.set_ip_cidr[0])
+            if ret is not None:
+                args.set_ip_cidr[0] = new_ip_cidr + ret.group(0)
+            else:
+                args.set_ip_cidr[0] = new_ip_cidr
 
 
 def  process_args(args):
@@ -702,6 +708,15 @@ def  process_args(args):
     if args.set_ip_cidr is not None and args.change_ip is not None:
         logger.critical("--set-ip-cidr and --change-ip can't co-exist")
         sys.exit(-1)
+
+    # --set-ip-cidr validation
+    if args.set_ip_cidr is not None:
+        try:
+            ipaddress.ip_interface(args.set_ip_cidr[0])
+        except ValueError:
+            logger.critical('ip address/netmask is invalid: %s',
+                            args.set_ip_cidr[0])
+            sys.exit(-1)
 
     # get org_domxml
     org_vm_name = args.vm_name[0]

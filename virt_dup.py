@@ -16,8 +16,8 @@ import ipaddress
 from subprocess import check_output
 
 DESCRIPTION = """\
-  This tool is to duplicate Virtual Machines in seconds. To reach that speed,
-  the trick is to deploy all VM images in the filesystem with the native
+  This tool is to duplicate Virtual Machines in seconds rather than minutes.
+  The trick is to deploy all VM images in the filesystem with the native
   COW(--reflink) capability, eg. btrfs, xfs-4.16, ocfs2, etc. Noted that
   virt-clone leverages the native COW(--reflink) capability of the filesystem
   to duplicate RAW, but not for qcow2 by now at the end of 2018.
@@ -26,7 +26,7 @@ DESCRIPTION = """\
   - reset hostname as same as the Virtual Machine name
   - reset MAC addresses
   - reset static IP to dhcp, if not specify '--change-ip'
-  - calibrate /etc/hosts with VM_NAME and --set-ip-cidr, --change-ip
+  - calibrate /etc/hosts with VM_NAME, --set-ip-cidr, and --change-ip
 
   Tips:
   - to let a image shared among Virtual Machines, you should

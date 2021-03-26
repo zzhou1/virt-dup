@@ -20,13 +20,13 @@ DESCRIPTION = """\
   The trick is to deploy all VM images in the filesystem with the native
   COW(--reflink) capability, eg. btrfs, xfs-4.16, ocfs2, etc. Noted that
   virt-clone leverages the native COW(--reflink) capability of the filesystem
-  to duplicate RAW, but not for qcow2 by now at the end of 2018.
+  to duplicate RAW, but not for qcow2 by now at the end of 2018. This tool
 
-  This tool will
   - reset hostname as same as the Virtual Machine name
   - reset MAC addresses
   - reset static IP to dhcp, if not specify '--change-ip'
   - calibrate /etc/hosts with VM_NAME, --set-ip-cidr, and --change-ip
+  - is compatible with openSUSE MicroOS
 
   Tips:
   - to let a image shared among Virtual Machines, you should
@@ -45,6 +45,9 @@ examples:
 
   Use the following example with care!
   virt-dup VMx VMy --change-ip str1,str2 192.168.150,192.168.151
+
+  To rename the virtual machine only
+  virt-dup VMx VMy --change-ip no
 
 """
 
@@ -147,7 +150,7 @@ def cli_parser():
                      help="add IP_CIDR to the first NIC")
     ap1.add_argument('--change-ip', dest='change_ip',
                      metavar='from,to', nargs='+',
-                     help="string replace of IP is handy. Use it with care!")
+                     help="string replace of IP is handy. 'no' means don't touch IP addr")
     return ap1
 
 
@@ -492,7 +495,7 @@ def manipulate_etc(args, sysroot_etc, new_vm_name):
 
     if args.change_ip is None:
         reset_ip_static_to_dhcp(sysroot_etc, new_vm_name)
-    else:
+    elif args.change_ip[0] != 'no':
         change_ip(sysroot_etc, new_vm_name, args.change_ip)
         return
 
@@ -716,6 +719,13 @@ def  process_args(args):
         except ValueError:
             logger.critical('ip address/netmask is invalid: %s',
                             args.set_ip_cidr[0])
+            sys.exit(-1)
+
+    if args.change_ip is not None:
+        str1 = args.change_ip[0].lower()
+        args.change_ip[0]=str1
+        if str1 != 'no' and ',' not in str1:
+            logger.critical("'--change-ip %s' misses ','.", str1)
             sys.exit(-1)
 
     # get org_domxml

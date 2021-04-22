@@ -125,7 +125,8 @@ def generate_new_domxml(org_vm_name, org_domxml, new_vm_name):
     # 4. to change all backing storage image files
     #    to replace all prefix to new VM name
     #    the match with the prefix of vm name
-    new_domxml = re_org_img.sub(r'\1\2%s\4\5'%new_vm_name, new_domxml)
+    # NOTE: https://stackoverflow.com/questions/5984633/python-re-sub-group-number-after-number
+    new_domxml = re_org_img.sub(r'\1\g<2>%s\4\5'%new_vm_name, new_domxml)
 
     logger.debug(re_domain_name.findall(new_domxml))
     logger.debug(re_uuid.findall(new_domxml))
@@ -670,8 +671,7 @@ def processing_vm_and_img(args, org_vm_name, org_domxml):
 
         for head, path, prefix, name, misc in re_org_img.findall(org_domxml):
             xml_tag_src_img = head+path+prefix+name+misc
-            new_img_path = re_org_img.sub(r'\2%s\4'%new_vm_name,
-                                          xml_tag_src_img)
+            new_img_path = path+new_vm_name+name
             logger.debug("'%s' to be duplicated", new_img_path)
             cp_reflink_img(path+prefix+name, new_img_path)
 

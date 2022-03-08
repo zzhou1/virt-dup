@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 #-*- coding: utf-8 -*-
 'virt-dup'
 
@@ -267,20 +267,16 @@ class SpareNbdImgfile():
         # find_unused_nbd_dev_node()
         assert check_output('modprobe nbd max_part=8'.split()) == b''
 
-        # lsblk -I43 only includes nbd devices, -d only disks, no partitions
-        with open('/proc/devices', 'r') as fd_proc_dev:
-            for line in fd_proc_dev:
-                if 'nbd' in line:
-                    dev_major_nbd = line.split()[0]
-                    break
-        assert dev_major_nbd.isdigit()
-        lsblk_o = check_output('lsblk -I{} -nd -o NAME'
-                               .format(dev_major_nbd)
-                               .split()).decode('utf-8')
+        try: 
+            lsnbd = check_output('ps -C qemu-nbd -o cmd='.split()).decode('utf-8')
+        except subprocess.CalledProcessError:
+            lsnbd = ''
+            pass
+        self.logger.debug('lsnbd = %s', lsnbd)
+        lsnbd = re.sub(r'.*--connect=/dev/(nbd\d+) .*', r'\1', lsnbd)
 
         for i in range(100):
-            if 'nbd{}'.format(i) not in lsblk_o:
-                #self.spare_nbd_id = i
+            if 'nbd{}'.format(i) not in lsnbd:
                 self.spare_nbd = '/dev/nbd'+str(i)
                 self.logger.debug('spare_nbd = %s', self.spare_nbd)
                 break
@@ -303,7 +299,7 @@ class SpareNbdImgfile():
 
         # double confirm kernel data get cleaned up indeed
         ret, _o, _e = run_cmd('lsblk ' + self.spare_nbd)
-        assert ret == 32
+        assert ret == 32 or ret == 0
 
     def __repr__(self):
         return self.spare_nbd
@@ -760,7 +756,7 @@ def  process_args(args):
     sys.exit(0)
 
 
-#
+#  TODO to detect if a new hostname need be created in /etc/hosts, restart libvirtd if so
 #
 #
 if __name__ == '__main__':

@@ -346,10 +346,10 @@ def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
     logger = logging.getLogger()
     logger.debug('set_ip_cidr(%s, %s)', sysroot_etc, new_ip_cidr)
 
-    ### ipaddr in ifcfg-*
+    ### ipaddr in ifcfg-*, except ifcfg-lo, .bak, .org, .orig, ...
     for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
-        if 'ifcfg-lo' in i:
-            continue
+        if i.endswith(('ifcfg-lo', '.bak')): continue 
+        if 'ifcfg-lo' in i or '\.' in i: continue 
 
         with open(i, 'r') as file:
             ifcfg = file.read()

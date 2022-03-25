@@ -7,6 +7,7 @@ import os
 import glob
 import tempfile
 import sys
+import time
 import random
 import uuid
 import subprocess
@@ -268,7 +269,9 @@ class SpareNbdImgfile():
         assert check_output('modprobe nbd max_part=8'.split()) == b''
 
         try: 
-            lsnbd = check_output('ps -C qemu-nbd -o cmd='.split()).decode('utf-8')
+            cmd = 'ps -C qemu-nbd -o cmd='
+            self.logger.debug(cmd)
+            lsnbd = check_output(cmd.split()).decode('utf-8')
         except subprocess.CalledProcessError:
             lsnbd = ''
             pass
@@ -285,20 +288,32 @@ class SpareNbdImgfile():
         cmd = 'qemu-nbd --connect={} {}'.format(self.spare_nbd, self.img_file)
         self.logger.debug(cmd)
         assert check_output(cmd.split()) == b''
+        ret, _o, _e = run_cmd('partprobe ' + self.spare_nbd)
+        ret, _o, _e = run_cmd('udevadm settle -t 10')
+        count=10
+        while (count > 0):
+            count -= 1
+            _r, out, _e = run_cmd('blockdev --getsize64 ' + self.spare_nbd)
+            if int(out) >= 512: break
+            else: time.sleep(1)
+            # Tumbleweed kernel 5.16.2, weird, lsblk might not ready to use even after udevadm settle 
+            self.logger.debug("wait for nbd server initialization, count = {}".format(count))
         return self.spare_nbd
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+
         cmd = 'qemu-nbd --disconnect ' + self.spare_nbd
         self.logger.debug(cmd)
         ret = check_output(cmd.split()).decode('utf-8').strip()
         self.logger.debug(ret)
         assert 'disconnected' in ret
 
-        # flush kernel device data
-        run_cmd('partprobe ' + self.spare_nbd)
-
         # double confirm kernel data get cleaned up indeed
+        ret, _o, _e = run_cmd('udevadm settle -t 10')
         ret, _o, _e = run_cmd('lsblk ' + self.spare_nbd)
+
+        run_cmd('fsync ' + self.img_file)
+
         assert ret == 32 or ret == 0
 
     def __repr__(self):
@@ -515,17 +530,18 @@ def manipulate_rootfs_in_qcow2(args, img_file, new_vm_name):
     with SpareNbdImgfile(img_file) as spare_nbd:
 
         microos_rootfs_dev = None
-        assert check_output(['partprobe', spare_nbd]) == b''
+
+        cmd = 'lsblk -lno NAME,FSTYPE ' + spare_nbd
+        logger.debug(cmd)
+        lines = check_output(cmd.split(), universal_newlines=True).splitlines()
+        logger.debug(lines)
 
         # partition_and_fstype
-        for line in check_output('lsblk -lno NAME,FSTYPE {}'
-                                 .format(spare_nbd).split(),
-                                 universal_newlines=True).splitlines():
+        for line in lines:
             if not (len(line.split()) > 1 and
                     line.split()[1] in ['xfs', 'btrfs', 'ocfs2', 'ext4']):
                 continue
 
-            logger.debug(line)
             with DevMntpoint(suffix='.'+new_vm_name,
                              prefix="virt_dup_mnt_",
                              dev=line.split()[0]) as mpoint:

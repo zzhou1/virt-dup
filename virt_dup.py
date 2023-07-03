@@ -14,49 +14,24 @@ import subprocess
 import re
 import logging
 import ipaddress
+import configparser
 from subprocess import check_output
 
-DESCRIPTION = """\
-  This tool is to duplicate Virtual Machines in seconds rather than minutes.
-  The trick is to deploy all VM images in the filesystem with the native
-  COW(--reflink) capability, eg. btrfs, xfs-4.16, ocfs2, etc. Noted that
-  virt-clone leverages the native COW(--reflink) capability of the filesystem
-  to duplicate RAW, but not for qcow2 by now at the end of 2018. This tool
-
-  - reset hostname as same as the Virtual Machine name
-  - reset MAC addresses
-  - reset static IP to dhcp, if not specify '--change-ip'
-  - calibrate /etc/hosts with VM_NAME, --set-ip-cidr, and --change-ip
-  - is compatible with openSUSE MicroOS
-
-  Tips:
-  - to let a image shared among Virtual Machines, you should
-    avoid the Virtual Machine name to be the substring of the image name.
-
-"""
-
-EPILOG = """\
-examples:
-  virt-dup VM_NAME  # it implies `virt-dup VM_NAME VM_NAME_dup`
-  virt-dup VMx VM1 VM2 VM3
-
-  To create 3 virtual machines, which has its own unique ip from 101 to 103
-  virt-dup VMx VM{1..3} --set-ip-cidr 2001:db8:dead:beef::101
-  virt-dup VMx VM{1..3} --set-ip-cidr 192.168.151.101/16
-
-  Use the following example with care!
-  virt-dup VMx VMy --change-ip str1,str2 192.168.150,192.168.151
-
-  To rename the virtual machine only
-  virt-dup VMx VMy --change-ip no
-
-"""
 
 
 
 def run_cmd(cmd, shell=True):
     '''
     Run a cmd, return (rc, stdout, stderr)
+    Args:
+        cmd (str): The command to run  
+        shell (bool, optional): Whether to run the command using the shell.
+                                Defaults to True
+    Returns:  
+        tuple: A tuple containing:
+            rc (int): The return code
+            stdout (str): The stdout of the command
+            stderr (str): The stderr of the command
     '''
 
     logger = logging.getLogger()
@@ -139,8 +114,45 @@ def generate_new_domxml(org_vm_name, org_domxml, new_vm_name):
 
 def cli_parser():
     'docstring'
-    ap1 = argparse.ArgumentParser(formatter_class=
-                                  argparse.RawDescriptionHelpFormatter,
+    
+    DESCRIPTION = """\
+This tool is to duplicate Virtual Machines in seconds rather than minutes.
+The trick is to deploy all VM images in the filesystem with the native
+COW(--reflink) capability, eg. btrfs, xfs-4.16, ocfs2, etc. Noted that
+virt-clone leverages the native COW(--reflink) capability of the filesystem
+to duplicate RAW, but not for qcow2 by now at the end of 2018. This tool
+
+- reset hostname as same as the Virtual Machine name
+- reset MAC addresses
+- reset static IP to dhcp, if not specify '--change-ip'
+- calibrate /etc/hosts with VM_NAME, --set-ip-cidr, and --change-ip
+- is compatible with openSUSE MicroOS
+
+Tips:
+- to let a image shared among Virtual Machines, you should
+    avoid the Virtual Machine name to be the substring of the image name.
+
+    """
+
+    EPILOG = """\
+examples:
+virt-dup VM_NAME  # it implies `virt-dup VM_NAME VM_NAME_dup`
+virt-dup VMx VM1 VM2 VM3
+
+To create 3 virtual machines, which has its own unique ip from 101 to 103
+virt-dup VMx VM{1..3} --set-ip-cidr 2001:db8:dead:beef::101
+virt-dup VMx VM{1..3} --set-ip-cidr 192.168.151.101/16
+
+Use the following example with care!
+virt-dup VMx VMy --change-ip str1,str2 192.168.150,192.168.151
+
+To rename the virtual machine only
+virt-dup VMx VMy --change-ip no
+
+    """
+    
+    
+    ap1 = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
                                   description=DESCRIPTION, epilog=EPILOG)
     ap1.add_argument('vm_name', metavar='VM_NAME', type=str,
                      help='The original VM must exist in `virsh list --all`',
@@ -355,16 +367,51 @@ def reset_hostname(sysroot_etc, new_vm_name):
                         logger.info("reset  %s:/etc/hosts", new_vm_name)
                         break
 
+def is_service_enabled(sysroot_etc, service_name):
+    service_name = re.sub(r'\.service$', '', service_name)
+    service_path = os.path.join(sysroot_etc, 'systemd/system/multi-user.target.wants', f'{service_name}.service')
+    return os.path.exists(service_path) or os.path.islink(service_path) 
 
 def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
     'docstring'
     logger = logging.getLogger()
     logger.debug('set_ip_cidr(%s, %s)', sysroot_etc, new_ip_cidr)
 
+    ### ipv4 address in /etc/NetworkManager/*.nmconnnection
+
+    if is_service_enabled(sysroot_etc, "NetworkManager.service"):
+        for i in glob.glob(sysroot_etc+'/NetworkManager/system-connections/*.nmconnection'):
+            config = configparser.ConfigParser()
+            config.read(i)
+            if not config.has_section('ipv4'):
+                config.add_section('ipv4')
+            s_ipv4 = config['ipv4']
+            if s_ipv4 is not None and config.has_option('ipv4', 'address1'):
+                o_addr1 = s_ipv4['address1']
+                config['ipv4']['address1'] = new_ip_cidr + re.sub(r'^(\d{1,3}\.){3}\d{1,3}(/\d{1,2})*', '', o_addr1)
+                old_ip_cidr = re.search(r'^(\d{1,3}\.){3}\d{1,3}(/\d{1,2})*', o_addr1).group(0)
+                logger.info("set   %s:%s: %s from %s",
+                            new_vm_name,
+                            re.sub(r"^" + sysroot_etc, "/etc", i),
+                            new_ip_cidr,
+                            old_ip_cidr)
+            else:
+                config.set('ipv4', 'address1', new_ip_cidr)
+                logger.info("set   %s:%s: %s (appended)",
+                            new_vm_name,
+                            re.sub(r"^" + sysroot_etc, "/etc", i),
+                            new_ip_cidr)
+            config.set('ipv4', 'method', 'manual')
+            with open(i, 'w') as configfile:  
+                config.write(configfile)
+                configfile.flush()
+            break
+
     ### ipaddr in ifcfg-*, except ifcfg-lo, .bak, .org, .orig, ...
-    for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
-        if i.endswith(('ifcfg-lo', '.bak')): continue 
-        if 'ifcfg-lo' in i or '\.' in i: continue 
+    if is_service_enabled(sysroot_etc, "wicked.service"):
+        for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
+            if i.endswith(('ifcfg-lo', '.bak')): continue 
+            if 'ifcfg-lo' in i or '\.' in i: continue 
 
         with open(i, 'r') as file:
             ifcfg = file.read()
@@ -375,9 +422,9 @@ def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
         if ret is not None:
             new_ifcfg = "{}'{}'".format(ret.group(1), new_ip_cidr)
             ifcfg = pattern.sub(new_ifcfg, ifcfg, 1)
-            logger.info("set   %s:%s: %s, from %s",
+            logger.info("set   %s:%s: %s from %s",
                         new_vm_name,
-                        re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i),
+                        re.sub(r"^" + sysroot_etc, "/etc", i),
                         new_ifcfg,
                         ret.group(2))
         else:  # need append IPADDR_1
@@ -385,7 +432,7 @@ def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
             ifcfg = ifcfg + new_ifcfg
             logger.info("set   %s:%s: %s (appended)",
                         new_vm_name,
-                        re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i),
+                        re.sub(r"^" + sysroot_etc, "/etc", i),
                         new_ifcfg)
 
         logger.debug(ifcfg)
@@ -415,13 +462,24 @@ def reset_ip_static_to_dhcp(sysroot_etc, new_vm_name):
     logger = logging.getLogger()
     logger.debug('reset_ip_static_to_dhcp(%s)', sysroot_etc)
 
-    for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
-        if 'ifcfg-lo' in i:
-            continue
+    if is_service_enabled(sysroot_etc, "NetworkManager.service"):
+        for i in glob.glob(sysroot_etc+'/NetworkManager/system-connections/*.nmconnection'):
+            config = configparser.ConfigParser()
+            config.read(i)
+            if config.has_section('ipv4'):
+                config.set('ipv4', 'method', 'auto')
+                with open(i, 'w') as configfile:  
+                    config.write(configfile)
+                    configfile.flush()
+                logger.info("reset %s:%s: to 'auto'/dhcp",
+                            new_vm_name,
+                            re.sub(sysroot_etc, '/etc', i))
+                break
 
-        ifcfg_changed = False
-        with open(i, 'r') as file:
-            ifcfg = file.read()
+    if is_service_enabled(sysroot_etc, "wicked.service"):
+        for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
+            if 'ifcfg-lo' in i:
+                continue
 
         pattern = re.compile(r'^\s*BOOTPROTO\s*=.*static.*$', re.M)
         ret = pattern.search(ifcfg)
@@ -448,7 +506,9 @@ def reset_ip_static_to_dhcp(sysroot_etc, new_vm_name):
                 file.flush()
 
 def change_ip(sysroot_etc, new_vm_name, arg_change_ip):
-    'docstring'
+    """
+    Change IP addresses in network configuration files for both NetworkManager and Wicked
+    """
     logger = logging.getLogger()
 
     for opt_change_ip in arg_change_ip:
@@ -458,20 +518,22 @@ def change_ip(sysroot_etc, new_vm_name, arg_change_ip):
         logger.debug('change_ip( %s, %s, %s,%s )',
                      sysroot_etc, new_vm_name, old_ip, new_ip )
 
-        ### ipaddr in ifcfg-*
-        for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
-            if 'ifcfg-lo' in i:
-                continue
+        ### ipaddr in ifcfg-* and /etc/NetworkManager/*.nmconnnection
+        cfgfiles = glob.glob(sysroot_etc + '/sysconfig/network/ifcfg-*') + glob.glob(sysroot_etc + '/NetworkManager/system-connections/*.nmconnection') 
+        if 'ifcfg-lo' in cfgfiles: 
+            cfgfiles.remove('ifcfg-lo')
+
+        for i in cfgfiles:
 
             with open(i, 'r') as file:
-                ifcfg = file.read()
+                cfg = file.read()
 
-            rcode = ifcfg.find(old_ip)
-            ret = ifcfg.replace(old_ip, new_ip)
+            rcode = cfg.find(old_ip)
+            ret = cfg.replace(old_ip, new_ip)
             if rcode > -1:
                 logger.info("change %s:%s: %s",
                             new_vm_name,
-                            re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i),
+                            re.sub(r'^' + sysroot_etc, '/etc', i),
                             new_ip)
 
                 logger.debug(ret)
@@ -681,7 +743,8 @@ def processing_vm_and_img(args, org_vm_name, org_domxml):
         if not libvirt_define_new_vm_domains(org_vm_name, org_domxml, new_vm_name):
             continue
 
-        for head, path, prefix, name, misc in re_org_img.findall(org_domxml):
+        all_imgs = re_org_img.findall(org_domxml)
+        for head, path, prefix, name, misc in all_imgs:
             xml_tag_src_img = head+path+prefix+name+misc
             new_img_path = path+new_vm_name+name
             logger.debug("'%s' to be duplicated", new_img_path)
@@ -693,6 +756,8 @@ def processing_vm_and_img(args, org_vm_name, org_domxml):
                 manipulate_rootfs_in_qcow2(args, new_img_path, new_vm_name)
             #else:
             #    manipulate_rootfs_in_raw_img(args, new_img_path)
+        if len(all_imgs) == 0:
+            logger.warning("No '%s*.qcow2' image file used, which means you don't take advantage of this tool.", org_vm_name)
 
         if args.set_ip_cidr is not None:
             ipif_b = int(ipaddress.ip_interface(args.set_ip_cidr[0])) + 1

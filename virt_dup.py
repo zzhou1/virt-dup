@@ -670,8 +670,26 @@ def manipulate_rootfs_in_qcow2(args, img_file, new_vm_name):
 
 
 def config_logger(args):
-    'docstring'
+    """
+    Configure a custom logger for the virt-dup tool.
+    
+    Args:
+    - args: Command-line arguments passed to the script.
+
+    Description:
+    - Creates a logger for logging messages with a specific format.
+    - Sets up logging to both a log file and the console.
+    - Adjusts the log level based on the verbosity flag.
+    - Creates the log directory if it doesn't exist and logs a message.
+    """ 
+
     tool_name = 'virt-dup'
+
+    var_log_dir = "/var/log/{}/".format(tool_name)
+    if not os.path.exists(var_log_dir):
+        os.makedirs(var_log_dir)
+        flag = True
+
     var_log_path = "/var/log/{0}/{0}.log".format(tool_name)
 
     format_txt = '%(asctime)s %(levelname)-5s: %(message)s'
@@ -689,6 +707,8 @@ def config_logger(args):
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
+    if "flag" in locals() :
+        logger.info("Create '{}'".format(var_log_dir))
 
 def libvirt_define_new_vm_domains(org_vm_name, org_domxml, new_vm_name):
     'docstring'

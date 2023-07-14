@@ -2,26 +2,26 @@ usage: virt_dup.py [-h] [-v] [--set-ip-cidr CIDR]
                    [--change-ip from,to [from,to ...]]
                    VM_NAME [VM_NAME ...]
 
-  This tool is to duplicate Virtual Machines in seconds rather than minutes.
-  The trick is to deploy all VM images in the filesystem with the native
-  COW(--reflink) capability, eg. btrfs, xfs-4.16, ocfs2, etc. Noted that
-  virt-clone leverages the native COW(--reflink) capability of the filesystem
-  to duplicate RAW, but not for qcow2 by now at the end of 2018. This tool
+This tool is to duplicate Virtual Machines in seconds rather than minutes.
+The trick is to deploy all VM images in the filesystem with the native
+COW(--reflink) capability, eg. btrfs, xfs-4.16, ocfs2, etc. Noted that
+virt-clone leverages the native COW(--reflink) capability of the filesystem
+to duplicate RAW, but not for qcow2 by now at the end of 2018. This tool
 
-  - reset hostname as same as the Virtual Machine name
-  - reset MAC addresses
-  - reset static IP to dhcp, if not specify '--change-ip'
-  - calibrate /etc/hosts with VM_NAME, --set-ip-cidr, and --change-ip
-  - is compatible with openSUSE MicroOS
+- reset hostname as same as the Virtual Machine name
+- reset MAC addresses
+- reset static IP to dhcp, if not specify '--change-ip'
+- calibrate /etc/hosts with VM_NAME, --set-ip-cidr, and --change-ip
+- is compatible with openSUSE MicroOS
 
-  Tips:
-  - to let a image shared among Virtual Machines, you should
-    avoid the Virtual Machine name to be the substring of the image name.
+Tips:
+- to let a image shared among Virtual Machines, you should
+  avoid the Virtual Machine name to be the substring of the image name.
 
 positional arguments:
   VM_NAME               The original VM must exist in `virsh list --all`
 
-optional arguments:
+options:
   -h, --help            show this help message and exit
   -v, --verbose, -d, --debug
   --set-ip-cidr CIDR    add IP_CIDR to the first NIC
@@ -30,15 +30,17 @@ optional arguments:
                         IP addr
 
 examples:
-  virt-dup VM_NAME  # it implies `virt-dup VM_NAME VM_NAME_dup`
-  virt-dup VMx VM1 VM2 VM3
+virt-dup VM_NAME  # it implies `virt-dup VM_NAME VM_NAME_dup`
+virt-dup VMx VM1 VM2 VM3
 
-  To create 3 virtual machines, which has its own unique ip from 101 to 103
-  virt-dup VMx VM{1..3} --set-ip-cidr 2001:db8:dead:beef::101
-  virt-dup VMx VM{1..3} --set-ip-cidr 192.168.151.101/16
+To create 3 virtual machines, which has its own unique ip from 101 to 103
+virt-dup VMx VM{1..3} --set-ip-cidr 2001:db8:dead:beef::101
+virt-dup VMx VM{1..3} --set-ip-cidr 192.168.151.101/16
 
-  Use the following example with care!
-  virt-dup VMx VMy --change-ip str1,str2 192.168.150,192.168.151
+Use the following example with care!
+virt-dup VMx VMy --change-ip str1,str2 192.168.150,192.168.151
 
-  To rename the virtual machine only
-  virt-dup VMx VMy --change-ip no
+To rename the virtual machine only
+virt-dup VMx VMy --change-ip no
+
+    

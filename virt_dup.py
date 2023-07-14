@@ -15,9 +15,8 @@ import re
 import logging
 import ipaddress
 import configparser
+import shlex
 from subprocess import check_output
-
-
 
 
 def run_cmd(cmd, shell=True):
@@ -130,9 +129,9 @@ to duplicate RAW, but not for qcow2 by now at the end of 2018. This tool
 
 Tips:
 - to let a image shared among Virtual Machines, you should
-    avoid the Virtual Machine name to be the substring of the image name.
+  avoid the Virtual Machine name to be the substring of the image name.
 
-    """
+"""
 
     EPILOG = """\
 examples:
@@ -211,10 +210,16 @@ def cp_reflink_img(org_img_file, new_img_file):
 
 
 class DevMntpoint(tempfile.TemporaryDirectory):
-    ''' upon destruction
-        - mpoint will umount
-        - the temporary directory under /tmp will be deleted afterwards
     '''
+    Class to temporarily mount a device. Unmount upon destruction, the
+    temporary directory under /tmp will be deleted afterwards.
+
+    Args:
+        prefix (str, optional): Prefix to use for the temporary directory.      
+        suffix (str, optional): Suffix to use for the temporary directory.
+        dev (str):              Device name under /dev/ to mount.
+    '''
+    has_btrfs_var = False
 
     def __init__(self, suffix=None, prefix=None, dev=None):
         self.logger = logging.getLogger()
@@ -222,16 +227,41 @@ class DevMntpoint(tempfile.TemporaryDirectory):
             self.logger.error("DevMntpoint 'dev=' args must be valid under '/dev'")
         self.dev = dev
         super().__init__(suffix, prefix)
+
     def __enter__(self):
         super().__enter__()
         cmd = 'mount /dev/' + self.dev + ' ' + self.name
         self.logger.debug(cmd)
-        check_output(cmd.split())
-        return self.name
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        cmd = 'umount /dev/' + self.dev
+        lines = check_output(cmd.split(), universal_newlines=True).splitlines()
         self.logger.debug(cmd)
-        check_output(cmd.split())
+        self.logger.debug(lines)
+            
+        if is_dev_btrfs(self.dev):
+            self.logger.debug("'btrfs' is detected. Now try to detect and mount '@/var' subvolume as well")
+            cmd = f'btrfs subvolume list {self.name}'
+            lines = check_output(cmd.split(), universal_newlines=True).splitlines()
+            lines = [re.sub(r'.*path @', '', s) for s in lines]
+            self.logger.debug(cmd)
+            self.logger.debug(lines)
+            if '/var' in lines:
+                self.has_btrfs_var = True
+                cmd = f'mount -o subvol=@/var /dev/{self.dev} {self.name}/var'
+                lines = check_output(cmd.split(), universal_newlines=True).splitlines()
+                self.logger.debug(cmd)
+                self.logger.debug(lines)
+
+        return self.name
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.has_btrfs_var:
+            cmd = f'umount {self.name}/var'
+            lines = check_output(cmd.split(), universal_newlines=True).splitlines()
+            self.logger.debug(cmd)
+            self.logger.debug(lines)
+        cmd = f'umount /dev/{self.dev}'
+        lines = check_output(cmd.split(), universal_newlines=True).splitlines()
+        self.logger.debug(cmd)
+        self.logger.debug(lines)
         super().__exit__(exc_type, exc_val, exc_tb)
 
 
@@ -378,7 +408,6 @@ def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
     logger.debug('set_ip_cidr(%s, %s)', sysroot_etc, new_ip_cidr)
 
     ### ipv4 address in /etc/NetworkManager/*.nmconnnection
-
     if is_service_enabled(sysroot_etc, "NetworkManager.service"):
         for i in glob.glob(sysroot_etc+'/NetworkManager/system-connections/*.nmconnection'):
             config = configparser.ConfigParser()
@@ -413,33 +442,33 @@ def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
             if i.endswith(('ifcfg-lo', '.bak')): continue 
             if 'ifcfg-lo' in i or '\.' in i: continue 
 
-        with open(i, 'r') as file:
-            ifcfg = file.read()
+            with open(i, 'r') as file:
+                ifcfg = file.read()
 
-        # set new_ip_cidr to the first match IPADDR_x, or append
-        pattern = re.compile(r"^(\s*IPADDR_\d+\s*=\s*)(.*)$", re.M)
-        ret = pattern.search(ifcfg)
-        if ret is not None:
-            new_ifcfg = "{}'{}'".format(ret.group(1), new_ip_cidr)
-            ifcfg = pattern.sub(new_ifcfg, ifcfg, 1)
-            logger.info("set   %s:%s: %s from %s",
-                        new_vm_name,
-                        re.sub(r"^" + sysroot_etc, "/etc", i),
-                        new_ifcfg,
-                        ret.group(2))
-        else:  # need append IPADDR_1
-            new_ifcfg = 'IPADDR_1=' + "'" + new_ip_cidr + "'"
-            ifcfg = ifcfg + new_ifcfg
-            logger.info("set   %s:%s: %s (appended)",
-                        new_vm_name,
-                        re.sub(r"^" + sysroot_etc, "/etc", i),
-                        new_ifcfg)
+            # set new_ip_cidr to the first match IPADDR_x, or append
+            pattern = re.compile(r"^(\s*IPADDR_\d+\s*=\s*)(.*)$", re.M)
+            ret = pattern.search(ifcfg)
+            if ret is not None:
+                new_ifcfg = "{}'{}'".format(ret.group(1), new_ip_cidr)
+                ifcfg = pattern.sub(new_ifcfg, ifcfg, 1)
+                logger.info("set   %s:%s: %s from %s",
+                            new_vm_name,
+                            re.sub(r"^" + sysroot_etc, "/etc", i),
+                            new_ifcfg,
+                            ret.group(2))
+            else:  # need append IPADDR_1
+                new_ifcfg = 'IPADDR_1=' + "'" + new_ip_cidr + "'"
+                ifcfg = ifcfg + new_ifcfg
+                logger.info("set   %s:%s: %s (appended)",
+                            new_vm_name,
+                            re.sub(r"^" + sysroot_etc, "/etc", i),
+                            new_ifcfg)
 
-        logger.debug(ifcfg)
-        with open(i, 'w') as file:
-            file.write(ifcfg)
-            file.flush()
-        break
+            logger.debug(ifcfg)
+            with open(i, 'w') as file:
+                file.write(ifcfg)
+                file.flush()
+            break
 
     ### /etc/hosts
     with open(sysroot_etc+'/hosts', 'r') as file:
@@ -456,7 +485,6 @@ def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
             file.write(new_hosts)
             file.flush()
 
-
 def reset_ip_static_to_dhcp(sysroot_etc, new_vm_name):
     'docstring'
     logger = logging.getLogger()
@@ -471,7 +499,7 @@ def reset_ip_static_to_dhcp(sysroot_etc, new_vm_name):
                 with open(i, 'w') as configfile:  
                     config.write(configfile)
                     configfile.flush()
-                logger.info("reset %s:%s: to 'auto'/dhcp",
+                logger.info("reset %s:%s: to 'auto'(aka. dhcp)",
                             new_vm_name,
                             re.sub(sysroot_etc, '/etc', i))
                 break
@@ -481,29 +509,33 @@ def reset_ip_static_to_dhcp(sysroot_etc, new_vm_name):
             if 'ifcfg-lo' in i:
                 continue
 
-        pattern = re.compile(r'^\s*BOOTPROTO\s*=.*static.*$', re.M)
-        ret = pattern.search(ifcfg)
-        if ret is not None:
-            ifcfg_changed = True
-            ifcfg = pattern.sub("BOOTPROTO='dhcp'", ifcfg)
-            logger.info("reset %s:%s: BOOTPROTO='dhcp', from 'static'",
-                        new_vm_name,
-                        re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i))
+            ifcfg_changed = False
+            with open(i, 'r') as file:
+                ifcfg = file.read()
 
-        pattern = re.compile(r"^(\s*IPADDR[_\d]*\s*=)([\s\"']*[\w\.:/]+[\"']*)$", re.M)
-        for ret, ip_cidr in pattern.findall(ifcfg, re.M):
-            ifcfg_changed = True
-            logger.info("reset %s:%s: %s'', from %s",
-                        new_vm_name,
-                        re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i),
-                        ret, ip_cidr)
-        ifcfg = pattern.sub(r"\1''", ifcfg)
+            pattern = re.compile(r'^\s*BOOTPROTO\s*=.*static.*$', re.M)
+            ret = pattern.search(ifcfg)
+            if ret is not None:
+                ifcfg_changed = True
+                ifcfg = pattern.sub("BOOTPROTO='dhcp'", ifcfg)
+                logger.info("reset %s:%s: BOOTPROTO='dhcp', from 'static'",
+                            new_vm_name,
+                            re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i))
 
-        if ifcfg_changed:
-            logger.debug(ifcfg)
-            with open(i, 'w') as file:
-                file.write(ifcfg)
-                file.flush()
+            pattern = re.compile(r"^(\s*IPADDR[_\d]*\s*=)([\s\"']*[\w\.:/]+[\"']*)$", re.M)
+            for ret, ip_cidr in pattern.findall(ifcfg, re.M):
+                ifcfg_changed = True
+                logger.info("reset %s:%s: %s'', from %s",
+                            new_vm_name,
+                            re.sub(r'.*/sysconfig/', '/etc/sysconfig/', i),
+                            ret, ip_cidr)
+            ifcfg = pattern.sub(r"\1''", ifcfg)
+
+            if ifcfg_changed:
+                logger.debug(ifcfg)
+                with open(i, 'w') as file:
+                    file.write(ifcfg)
+                    file.flush()
 
 def change_ip(sysroot_etc, new_vm_name, arg_change_ip):
     """
@@ -528,37 +560,37 @@ def change_ip(sysroot_etc, new_vm_name, arg_change_ip):
             with open(i, 'r') as file:
                 cfg = file.read()
 
-            rcode = cfg.find(old_ip)
-            ret = cfg.replace(old_ip, new_ip)
-            if rcode > -1:
+            ret1 = cfg.find(old_ip)
+            ret2 = cfg.replace(old_ip, new_ip)
+            if ret1 > -1:
                 logger.info("change %s:%s: %s",
                             new_vm_name,
                             re.sub(r'^' + sysroot_etc, '/etc', i),
                             new_ip)
 
-                logger.debug(ret)
+                logger.debug(ret2)
                 with open(i, 'w') as file:
-                    file.write(ret)
+                    file.write(ret2)
                     file.flush()
 
         ### /etc/hosts
         with open(sysroot_etc+'/hosts', 'r') as file:
             old_hosts = file.read()
 
-        rcode = old_hosts.find(old_ip)
-        ret = old_hosts.replace(old_ip, new_ip)
-        logger.debug(ret)
-        if rcode > -1:
+        ret1 = old_hosts.find(old_ip)
+        ret2 = old_hosts.replace(old_ip, new_ip)
+        logger.debug(ret2)
+        if ret1 > -1:
             logger.info("change %s:/etc/hosts: %s", new_vm_name, new_ip)
             with open(sysroot_etc+'/hosts', 'w') as file:
-                file.write(ret)
+                file.write(ret2)
                 file.flush()
 
 
 
 
 def manipulate_etc(args, sysroot_etc, new_vm_name):
-    'docstring'
+    'eg. reset hostname, hosts, ipaddr, etc.'
     logger = logging.getLogger()
     logger.debug('manipulate_etc( %s )', sysroot_etc)
     if sysroot_etc is None:
@@ -567,9 +599,9 @@ def manipulate_etc(args, sysroot_etc, new_vm_name):
 
     reset_hostname(sysroot_etc, new_vm_name)
 
-    if args.change_ip is None:
+    if args.change_ip is None and args.set_ip_cidr is None:
         reset_ip_static_to_dhcp(sysroot_etc, new_vm_name)
-    elif args.change_ip[0] != 'no':
+    elif args.change_ip is not None and args.change_ip[0] != 'no':
         change_ip(sysroot_etc, new_vm_name, args.change_ip)
         return
 
@@ -577,12 +609,65 @@ def manipulate_etc(args, sysroot_etc, new_vm_name):
         set_ip_cidr(sysroot_etc, new_vm_name, args.set_ip_cidr[0])
 
 
+def is_dev_btrfs(dev):
+    """Check if a device uses the btrfs filesystem.
+    
+    Args:
+        dev (str): The device name (e.g. 'sda1', '/dev/sda')
+        
+    Returns:
+        bool: True if device uses btrfs, False otherwise.
+    """
+    dev = re.sub(r'^/dev/', '', dev)
+    cmd = f'lsblk -lno FSTYPE /dev/{dev}'
+    lines = check_output(cmd.split(), universal_newlines=True).splitlines()
+    logging.debug(cmd)
+    logging.debug(lines)
+    return 'btrfs' in lines
+
+def is_path_rootfs(path_sysroot):
+    return (os.path.exists(f'{path_sysroot}/boot') and
+            os.path.exists(f'{path_sysroot}/dev') and
+            os.path.exists(f'{path_sysroot}/etc') and
+            os.path.exists(f'{path_sysroot}/usr') and
+            os.path.exists(f'{path_sysroot}/var'))
+
 def is_rootfs(path_sysroot):
     'docstring'
 
     return (os.path.exists('{}/etc'.format(path_sysroot)) and
             os.path.exists('{}/boot'.format(path_sysroot)) and
             os.path.exists('{}/var'.format(path_sysroot)))
+
+
+def get_config(key, path_config):
+    """To read OS config file, eg. /etc/sysconfig/nfs, /etc/os-release
+    key=value                  eg. NAME="ALP Micro"
+    """
+    with open(path_config) as f:
+        data = f.read()
+    config = {}
+    for token in shlex.split(data):
+        if '=' in token:
+            k, value = token.split('=',1)
+            config[k] = value
+        else:
+            continue 
+    return config[key]
+
+
+def read_fstab_etc_overlay_option(path_fstab):
+    # overlay mount option
+    logger = logging.getLogger()
+    with open(path_fstab, 'r') as file:
+        ret = file.read()
+        l_dir = re.search(r'overlay.*/etc.*(lowerdir=[^,]+),', ret).group(1)
+        u_dir = re.search(r'overlay.*/etc.*(upperdir=[^,]+),', ret).group(1)
+        w_dir = re.search(r'overlay.*/etc.*(workdir=[^,]+),', ret).group(1)
+        logger.debug('%s', l_dir)
+        logger.debug('%s', u_dir)
+        logger.debug('%s', w_dir)
+        return '{},{},{}'.format(l_dir, u_dir, w_dir)
 
 
 def manipulate_rootfs_in_qcow2(args, img_file, new_vm_name):
@@ -594,8 +679,8 @@ def manipulate_rootfs_in_qcow2(args, img_file, new_vm_name):
         microos_rootfs_dev = None
 
         cmd = 'lsblk -lno NAME,FSTYPE ' + spare_nbd
-        logger.debug(cmd)
         lines = check_output(cmd.split(), universal_newlines=True).splitlines()
+        logger.debug(cmd)
         logger.debug(lines)
 
         # partition_and_fstype
@@ -604,8 +689,8 @@ def manipulate_rootfs_in_qcow2(args, img_file, new_vm_name):
                     line.split()[1] in ['xfs', 'btrfs', 'ocfs2', 'ext4']):
                 continue
 
-            with DevMntpoint(suffix='.'+new_vm_name,
-                             prefix="virt_dup_mnt_",
+            with DevMntpoint(prefix="virt_dup_mnt_", 
+                             suffix='.'+new_vm_name,
                              dev=line.split()[0]) as mpoint:
 
                 logger.debug('mpoint = %s', mpoint)
@@ -617,28 +702,46 @@ def manipulate_rootfs_in_qcow2(args, img_file, new_vm_name):
                         return
                     continue
 
-                cmd = 'btrfs property get -ts {}'.format(mpoint)
-                logger.debug(cmd)
+                cmd = f'btrfs property get -ts {mpoint}'
                 ret = check_output(cmd.split()).strip().decode('utf-8')
+                logger.debug(cmd)
                 logger.debug(ret)
 
-                # rootfs - btrfs normal - non- microos_rootfs
+                # rootfs - btrfs normal, non-microos_rootfs, eg. Tumbleweed
                 if (ret == 'ro=false' and is_rootfs(mpoint) and
                         microos_rootfs_dev is None):
                     manipulate_etc(args, mpoint+'/etc', new_vm_name)
                     return
 
-                # rootfs - microos_rootfs partition
+                # rootfs - ALP Micro
+                if (ret == 'ro=true' and is_rootfs(mpoint) and
+                        get_config('NAME', f'{mpoint}/etc/os-release') == 'ALP Micro'): 
+
+                    if not os.path.exists(f'{mpoint}/etc/fstab'):
+                        logger.error('rootfs must have /etc/fstab')
+                        return 
+                    ret = read_fstab_etc_overlay_option(f'{mpoint}/etc/fstab')
+                    ret = ret.replace('/sysroot', mpoint)
+
+                    # construct /etc overlayfs 
+                    with OverlayMntpoint(prefix='virt_dup_alp_micro_etc_',
+                                         suffix='.'+new_vm_name,
+                                         mount_opt=ret) as mpoint_overlay:
+                        manipulate_etc(args, mpoint_overlay, new_vm_name)
+                        return
+
+                # SLE MicroOS
+                ## SLE microos_rootfs partition
                 if ret == 'ro=true' and is_rootfs(mpoint):
                     microos_rootfs_dev = line.split()[0]
+                    continue    # continue to unmount rootfs, remount later together with /var
+
+                ## SLE microos_var partition:lib/overlay/x/etc/...
+                if not os.path.exists(f'{mpoint}/lib/overlay'):
                     continue
 
-                # rootfs - microos_var:lib/overlay/x/etc/...
-                if not os.path.exists('{}/lib/overlay'.format(mpoint)):
-                    continue
-
-                with DevMntpoint(suffix='.'+new_vm_name,
-                                 prefix="virt_dup_mnt_",
+                with DevMntpoint(prefix="virt_dup_mnt_", 
+                                 suffix='.'+new_vm_name,
                                  dev=microos_rootfs_dev) as microos_rootfs:
 
                     logger.debug('microos_rootfs = %s', microos_rootfs)
@@ -648,24 +751,14 @@ def manipulate_rootfs_in_qcow2(args, img_file, new_vm_name):
                         logger.error('microos_rootfs must have /etc/fstab')
                         return
 
-                    # overlay mount option
-                    with open(microos_rootfs+'/etc/fstab', 'r') as file:
-                        ret = file.read()
-                        udir = re.search(r'.*(upperdir=[^,]+),', ret).group(1)
-                        ldir = re.search(r'.*(lowerdir=[^,]+),', ret).group(1)
-                        wdir = re.search(r'.*(workdir=[^,]+),', ret).group(1)
-                        logger.debug('%s', udir)
-                        logger.debug('%s', ldir)
-                        logger.debug('%s', wdir)
-                        ret = '{},{},{}'.format(ldir, udir, wdir)
-                        ret = ret.replace('/sysroot/etc', microos_rootfs+'/etc')
-                        ret = ret.replace('/sysroot/var', mpoint)
-
-                    # construct overlayfs for microos_var_etc
+                    # construct the overlayfs instance for microos_var_etc
+                    ret = read_fstab_etc_overlay_option(microos_rootfs+'/etc/fstab')
+                    ret = ret.replace('/sysroot/etc', microos_rootfs+'/etc') 
+                    ret = ret.replace('/sysroot/var', mpoint)
                     with OverlayMntpoint(prefix='virt_dup_microos_etc_',
                                          suffix='.'+new_vm_name,
-                                         mount_opt=ret) as mpoint:
-                        manipulate_etc(args, mpoint, new_vm_name)
+                                         mount_opt=ret) as mpoint_overlay:
+                        manipulate_etc(args, mpoint_overlay, new_vm_name)
                         return
 
 
@@ -780,8 +873,8 @@ def processing_vm_and_img(args, org_vm_name, org_domxml):
             logger.warning("No '%s*.qcow2' image file used, which means you don't take advantage of this tool.", org_vm_name)
 
         if args.set_ip_cidr is not None:
-            ipif_b = int(ipaddress.ip_interface(args.set_ip_cidr[0])) + 1
-            new_ip_cidr = str(ipaddress.ip_address(ipif_b))
+            ip_if_b = int(ipaddress.ip_interface(args.set_ip_cidr[0])) + 1
+            new_ip_cidr = str(ipaddress.ip_address(ip_if_b))
 
             ret = re.search(r'/\d+', args.set_ip_cidr[0])
             if ret is not None:

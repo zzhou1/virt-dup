@@ -18,6 +18,10 @@ import configparser
 import shlex
 from subprocess import check_output
 
+def f_sync(filename):
+    with open(filename, 'r+') as f:
+        f.flush()
+        os.fsync(f.fileno())
 
 def run_cmd(cmd, shell=True):
     '''
@@ -39,8 +43,8 @@ def run_cmd(cmd, shell=True):
                            shell=shell,
                            universal_newlines=True,
                            stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE,
-                           text=True)
+                           stderr=subprocess.PIPE
+                           )
     out, err = cli.communicate()
     if re.search(r'command.not.found', out+err, re.M):
         logger.warning(" command-not-found='%s'", cmd)
@@ -206,7 +210,7 @@ def cp_reflink_img(org_img_file, new_img_file):
     cmd = 'cp --reflink=auto -f {} {}'.format(org_img_file, new_img_file)
     logger.info(cmd)
     check_output(cmd.split())
-    check_output(['fsync', new_img_file])
+    f_sync(new_img_file)
 
 
 class DevMntpoint(tempfile.TemporaryDirectory):
@@ -354,7 +358,7 @@ class SpareNbdImgfile():
         ret, _o, _e = run_cmd('udevadm settle -t 10')
         ret, _o, _e = run_cmd('lsblk ' + self.spare_nbd)
 
-        run_cmd('fsync ' + self.img_file)
+        f_sync(self.img_file)
 
         assert ret == 32 or ret == 0
 
@@ -385,7 +389,7 @@ def reset_hostname(sysroot_etc, new_vm_name):
             old_hosts = file.read()
             logger.debug('old_hosts= %s', old_hosts)
 
-        if old_hostname in old_hosts:
+        if bool(re.search(r'\s{}\s'.format(re.escape(old_hostname)), old_hosts)):
             with open(sysroot_etc+'/hosts', 'w') as file:
                 new_hosts = old_hosts.replace(old_hostname, new_vm_name)
                 file.write(new_hosts)
@@ -396,6 +400,74 @@ def reset_hostname(sysroot_etc, new_vm_name):
                     if new_vm_name in i:
                         logger.info("reset  %s:/etc/hosts", new_vm_name)
                         break
+
+
+def reset_mac_LLADDR(sysroot_etc, new_vm_name):
+    """
+    Deal with /etc/sysconfig ifg-eth0 LLADDR=
+    """
+    logger = logging.getLogger()
+    directory_to_search = sysroot_etc + "/sysconfig/network/"
+    line_to_find = "LLADDR="
+
+    result_files = lladdr_find_cfg_files(directory_to_search, line_to_find)
+
+    for f in result_files:
+        for lladdr in lladdr_values_in_file(f):
+            new_mac_address = lladdr_randomize(lladdr)
+            s = re.sub(r"^" + sysroot_etc, "/etc", f)
+            logger.info("change LLADDR %s:%s %s -> %s", new_vm_name, s, lladdr, new_mac_address)
+            lladdr_randomize_in_a_file(f, lladdr, new_mac_address)
+        
+def lladdr_find_cfg_files(directory, line_prefix):
+    """ eg.
+    directory_to_search = "/etc/sysconfig/network/"
+    line_to_find = "LLADDR="
+    """
+    file_list = []
+
+    for filename in os.listdir(directory):
+        filepath = os.path.join(directory, filename)
+        if os.path.isfile(filepath):
+            with open(filepath, 'r') as file:
+                for line in file:
+                    if re.match(r'\s*' + re.escape(line_prefix), line):
+                        file_list.append(filepath)
+                        break
+    return file_list
+
+def lladdr_values_in_file(file_path):
+    lladdr_values = set()
+
+    with open(file_path, 'r') as file:
+        for line in file:
+            clean_line = re.sub(r'\s*', '', line)
+            clean_line = re.sub(r'#.*$', '', clean_line)
+            if clean_line.startswith("LLADDR="):
+                match = re.match(r"""LLADDR=[\s'"]*(52:54:00:..:..:..)""", clean_line)
+                if match:
+                    lladdr_values.add(match.group(1))
+    return lladdr_values
+
+def lladdr_randomize(mac_address):
+    """eg.52:54:00:xx:xx:xx """
+    segments = mac_address.split(':')
+
+    for i in range(len(segments) - 3, len(segments)):
+        segments[i] = format(random.randint(0, 255), '02x')
+
+    new_mac_address = ':'.join(segments)
+    return new_mac_address
+
+def lladdr_randomize_in_a_file(file_path, old_mac_address, new_mac_address):
+    with open(file_path, 'r') as file:
+        content = file.read()
+        content = re.sub(r'\b' + re.escape(old_mac_address) + r'\b', new_mac_address, content)
+
+        with open(file_path, 'w') as file:
+            file.write(content)
+            file.flush()
+
 
 def is_service_enabled(sysroot_etc, service_name):
     service_name = re.sub(r'\.service$', '', service_name)
@@ -586,11 +658,9 @@ def change_ip(sysroot_etc, new_vm_name, arg_change_ip):
                 file.write(ret2)
                 file.flush()
 
-
-
-
 def manipulate_etc(args, sysroot_etc, new_vm_name):
-    'eg. reset hostname, hosts, ipaddr, etc.'
+    """eg. reset hostname, hosts, ipaddr, etc.
+    """
     logger = logging.getLogger()
     logger.debug('manipulate_etc( %s )', sysroot_etc)
     if sysroot_etc is None:
@@ -598,6 +668,7 @@ def manipulate_etc(args, sysroot_etc, new_vm_name):
         return
 
     reset_hostname(sysroot_etc, new_vm_name)
+    reset_mac_LLADDR(sysroot_etc, new_vm_name)
 
     if args.change_ip is None and args.set_ip_cidr is None:
         reset_ip_static_to_dhcp(sysroot_etc, new_vm_name)
@@ -883,7 +954,7 @@ def processing_vm_and_img(args, org_vm_name, org_domxml):
                 args.set_ip_cidr[0] = new_ip_cidr
 
 
-def  process_args(args):
+def process_args(args):
     'docstring'
 
     config_logger(args)

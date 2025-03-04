@@ -421,10 +421,15 @@ def reset_mac_LLADDR(sysroot_etc, new_vm_name):
         
 def lladdr_find_cfg_files(directory, line_prefix):
     """ eg.
-    directory_to_search = "/etc/sysconfig/network/"
-    line_to_find = "LLADDR="
+    directory = "/etc/sysconfig/network/"
+    line_prefix = "LLADDR="
     """
+    logger = logging.getLogger()
     file_list = []
+    
+    if not os.path.exists(directory) or not os.path.isdir(directory):
+        logger.debug(f"Directory '{directory}' does not exist or is not a directory")
+        return file_list
 
     for filename in os.listdir(directory):
         filepath = os.path.join(directory, filename)
@@ -635,7 +640,7 @@ def change_ip(sysroot_etc, new_vm_name, arg_change_ip):
             ret1 = cfg.find(old_ip)
             ret2 = cfg.replace(old_ip, new_ip)
             if ret1 > -1:
-                logger.info("change %s:%s: %s",
+                logger.info("changed %s:%s: %s",
                             new_vm_name,
                             re.sub(r'^' + sysroot_etc, '/etc', i),
                             new_ip)
@@ -653,7 +658,7 @@ def change_ip(sysroot_etc, new_vm_name, arg_change_ip):
         ret2 = old_hosts.replace(old_ip, new_ip)
         logger.debug(ret2)
         if ret1 > -1:
-            logger.info("change %s:/etc/hosts: %s", new_vm_name, new_ip)
+            logger.info("changed %s:/etc/hosts: %s", new_vm_name, new_ip)
             with open(sysroot_etc+'/hosts', 'w') as file:
                 file.write(ret2)
                 file.flush()

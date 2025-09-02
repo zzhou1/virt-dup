@@ -517,7 +517,7 @@ def set_ip_cidr(sysroot_etc, new_vm_name, new_ip_cidr):
     if is_service_enabled(sysroot_etc, "wicked.service"):
         for i in glob.glob(sysroot_etc+'/sysconfig/network/ifcfg-*'):
             if i.endswith(('ifcfg-lo', '.bak')): continue 
-            if 'ifcfg-lo' in i or '\.' in i: continue 
+            if 'ifcfg-lo' in i or '.' in i: continue 
 
             with open(i, 'r') as file:
                 ifcfg = file.read()
